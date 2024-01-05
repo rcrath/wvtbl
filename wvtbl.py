@@ -1,4 +1,4 @@
- 
+# block 1 
 import os
 import sys
 import wave
@@ -75,7 +75,7 @@ def interpolate_best(waveform, original_sr, target_sr):
 
 # function to interpolate segments by ratios
 def interpolate_seg(data, original_sr, target_length):
-    print(f"original_sr, {original_sr} kHz,  target_length {target_length} samples")
+    #print(f"original_sr, {original_sr} kHz,  target_length {target_length} samples")
     """
     Interpolate a waveform segment to a specified target length.
     
@@ -102,6 +102,7 @@ def interpolate_seg(data, original_sr, target_length):
 
     return interpolated
 
+# block 2
 # Function to create a folder if it doesn't exist
 def create_folder(folder_name):
     os.makedirs(folder_name, exist_ok=True)
@@ -125,6 +126,57 @@ def get_pitch_using_sox(base_prep, tmp_folder="tmp"):
 def is_file_silent(file_path):
     data, _ = sf.read(file_path)  # Read the file
     return np.all(data == 0)  # Check if all values in data are 0
+
+def prompt_for_start_frame(highest_frame):
+    while True:
+        start_frame_input = input(f"Enter the starting frame (1 to {highest_frame}): ")
+        try:
+            start_frame = int(start_frame_input)
+            if 1 <= start_frame <= highest_frame:
+                return start_frame
+            else:
+                print(f"Please enter a number within the range 1 to {highest_frame}.")
+        except ValueError:
+            print("Invalid input. Please enter a valid number.")
+
+def combine_and_save_frames(start_frame, frame_count):
+    combined_frames = []
+    ending_frame = start_frame + frame_count - 1
+
+    for filename in sorted(os.listdir(powersof2_wt192_folder))[start_frame - 1:ending_frame]:
+        if filename.endswith(ext):
+            file_path = os.path.join(powersof2_wt192_folder, filename)
+            waveform, sr = sf.read(file_path)
+            combined_frames.append(waveform)
+
+    combined_frame = np.concatenate(combined_frames, axis=0)
+    output_file_name = f"{base}_wt192k24b_start{start_frame:04d}_{frame_count}_frame{ext}"
+    output_file_path = os.path.join(pwrs2_folder, output_file_name)
+    sf.write(output_file_path, combined_frame, sr, subtype='FLOAT')
+    print(f"Combined {frame_count} frames starting from frame {start_frame} saved as: {output_file_path}")
+
+def perform_backfill_and_invert():
+    backward_fill_count = frames_to_combine_wt - total_files_in_wt192_folder
+    combined_frames = []
+
+    for filename in sorted(os.listdir(powersof2_wt192_folder))[:total_files_in_wt192_folder]:
+        if filename.endswith(ext):
+            file_path = os.path.join(powersof2_wt192_folder, filename)
+            waveform, sr = sf.read(file_path)
+            combined_frames.append(waveform)
+    
+    for filename in sorted(os.listdir(powersof2_wt192_folder))[-backward_fill_count:]:
+        if filename.endswith(ext):
+            file_path = os.path.join(powersof2_wt192_folder, filename)
+            waveform, sr = sf.read(file_path)
+            inverted_waveform = -np.flip(waveform)
+            combined_frames.append(inverted_waveform)
+    
+    combined_frame = np.concatenate(combined_frames, axis=0)
+    output_file_name = f"{base}_combined_backfilled_{frames_to_combine_wt}_frames{ext}"
+    output_file_path = os.path.join(pwrs2_folder, output_file_name)
+    sf.write(output_file_path, combined_frame, sr, subtype='FLOAT')
+    print(f"Backfilled combined file created at {output_file_path}")
 
 # Check if command-line arguments are provided
 if len(sys.argv) >= 4:
@@ -151,6 +203,7 @@ create_folder(wavetables_folder)
 # Set the file extension
 ext = ".wav"
 
+# block 3
 # begin upsample section
 print("\nUpsample section")
 
@@ -223,6 +276,7 @@ if abs(data[0]) < some_small_value:  # Define 'some_small_value' based on your f
 first_segment = None
 second_segment = None
 segment_index = 0
+
 # Read the audio data and sampling rate from the file
 
 
@@ -259,6 +313,7 @@ for i in range(1, len(data)):
             else:
                 print(f"Warning: Empty wave cycle detected at index {i}")
 
+# block 4
 # Check if the first two segments contain full wave cycles
 if first_segment is not None and second_segment is not None:
     full_cycle_first = is_full_wavecycle(first_segment)
@@ -308,9 +363,6 @@ plus_minus_tolerance = plus_minus_tolerance_percent / 100
 # Initialize a variable to track if any pairs qualify
 any_qualify = False
 
-# Variables you already have
-# wavecycle_samples_target_192: The target number of samples for a segment
-# plus_minus_tolerance: The tolerance percentage as a decimal
 
 # Calculate the upper and lower bounds for the number of samples
 lower_bound = wavecycle_samples_target_192 * (1 - plus_minus_tolerance)
@@ -363,21 +415,36 @@ if len(first_three_indices) == 3:
 else:
     print("Did not find three consecutive segments within the tolerance range.")
 
+# block 5
 # Rename remaining files outside the tolerance range
 print("Renaming remaining files outside the tolerance range...")
 
-# Initialize a variable to track if any segments are renamed due to being outside the tolerance
+# Initialize variables
+first_qualifying_idx = None
 any_outside_tolerance_renamed = False
+
+# Check if any qualifying segments were found earlier in the script
+if len(first_three_indices) == 3:
+    first_qualifying_idx = first_three_indices[0]
+
+    # Calculate the sample number before the first good segment
+    if first_qualifying_idx > 0:
+        last_sample_before_good = segment_start_indices[first_qualifying_idx] - 1
+    else:
+        last_sample_before_good = 0  # If the first segment is good, then it starts at the beginning
+
+    print(f"Length of attack phase: {last_sample_before_good} samples")
+else:
+    print("Did not find three consecutive segments within the tolerance range.")
 
 # Loop through all the segments that weren't previously renamed to '_atk'
 for i in range(len(segment_sizes)):
-    # Skip the segments that were already renamed to '_atk'
-    if i < first_qualifying_idx or i in first_three_indices:
+    # Skip the segments that were already renamed to '_atk' or outside tolerance range
+    if first_qualifying_idx is not None and (i < first_qualifying_idx or i in first_three_indices):
         continue
-    
+
     # Check if the segment is outside the tolerance
     if segment_sizes[i] < lower_bound or segment_sizes[i] > upper_bound:
-        # Set the flag to True as we've found a segment outside the tolerance
         any_outside_tolerance_renamed = True
 
         # Calculate percent deviation from the target
@@ -386,21 +453,21 @@ for i in range(len(segment_sizes)):
         # Construct the original segment name and path
         original_name = f"{base}_seg_{i:04d}{ext}"
         original_path = os.path.join(tmp_folder, original_name)
-        
+
         # Construct the new name and path with a label indicating it's deviant
         new_name = f"{base}_seg_{i:04d}_dev{ext}"
         new_path = os.path.join(tmp_folder, new_name)
-        
+
         # Rename the file and print the deviation information
         if os.path.exists(original_path):
             os.rename(original_path, new_path)
-            print(f"{new_name}' deviates {deviation_percent:.2f}%")
+            print(f"{new_name} deviates {deviation_percent:.2f}%")
 
 # After checking all segments, report if no files were outside the tolerance range
 if not any_outside_tolerance_renamed:
     print("No segment files fall outside the tolerance range.")
 
-
+# block 6
 # ---INTERPOLATION ---
 print("begin interpolation")
 # Initialize the list to store interpolation ratios
@@ -491,6 +558,7 @@ for file in os.listdir(tmp_folder):
 
 else:
         print(f"File does not match pattern: {file}")
+
 # Initialize a list to keep track of files with incorrect lengths and a counter
 incorrect_files = []
 incorrect_lengths = 0  # Initialize the counter for files with incorrect lengths
@@ -555,7 +623,7 @@ for file in incorrect_files:
     print(f"  Wrote corrected data to {file_path}")
 
 
-
+# block 7
 # Paths for the new directories inside wavetables_folder
 path_192k32b = os.path.join(wavetables_folder, '192k32b')
 path_48k24b = os.path.join(wavetables_folder, '48k24b')
@@ -622,13 +690,11 @@ for file in os.listdir(wavetables_folder):
 
 print("Original files successfully renamed and moved to 192k32b")
 
-
+# block 8
 # --- powers of two ---
 print(f"--- BEGIN POWERS OF 2 ---")
 
-# Assuming 'wavetables_folder' is the base directory for wavetables, as defined in uvar
-# and is already defined in the script
-
+print("192k")
 # Define the subfolders for original and resampled waveforms
 wvtbls192 = os.path.join(wavetables_folder, '192k32b')  # Use the actual variable from uvar if it's different
 
@@ -639,37 +705,90 @@ pwrs2_folder = os.path.join(wavetables_folder, 'powersof2')  # Adjust the subfol
 if not os.path.exists(pwrs2_folder):
     os.makedirs(pwrs2_folder)
 
-print(f"Original waveforms folder set to: {wvtbls192}")
-print(f"Resampled waveforms folder set to: {pwrs2_folder}")
+# Define the subfolder within 'wavetables/powersof2' named '192' and to save the interpolated segments
+subfolder_192_name = "192"
+
+powersof2_192_folder = os.path.join(wavetables_folder, "powersof2", subfolder_192_name)
+
+# Create the pwrs2 192 _folder if it doesn't exist
+if not os.path.exists(powersof2_192_folder):
+    os.makedirs(powersof2_192_folder)
+
+
+print(f"Source 192 waveforms folder set to: {wvtbls192}")
+print(f"Resampled waveforms folder set to: {powersof2_192_folder}")
 
 # Calculate the nearest higher power of 2
-nearest_higher_power_of_2 = 2**np.ceil(np.log2(wavecycle_samples_target_192))
+nearest_192_higher_power_of_2 = 2**np.ceil(np.log2(wavecycle_samples_target_192))
 
 # Define the ratio of the nearest higher power of 2 to wavecycle_samples_target_192
-pwr_of_2_ratio = nearest_higher_power_of_2 / wavecycle_samples_target_192
+pwr_of_2_192_ratio = nearest_192_higher_power_of_2 / wavecycle_samples_target_192
 
-print("Nearest higher power of 2:", nearest_higher_power_of_2)
-print("Power of 2 ratio:", pwr_of_2_ratio)
+# Calculate the target length for 192K files as the power of 2 target
+pwr_of_2_192_target = int(round(wavecycle_samples_target_192 * pwr_of_2_192_ratio))
 
-# save pwrof2 192k files to tmp
+
+# Calculate the new target length for all 192k files
+target_192_length = int(round(wavecycle_samples_target_192 * pwr_of_2_192_ratio))
+
+
+
+for filename in os.listdir(wvtbls192):
+    if filename.endswith('.wav'):  # Check if the file is a .wav file
+        # Construct the full path for the input file using wvtbls192
+        input_file_path = os.path.join(wvtbls192, filename)
+        
+        # Read the waveform and its sample rate
+        data, original_sr = sf.read(input_file_path)
+        
+        # Use interpolate_seg to resample the segment to the new target length
+        interpolated_data = interpolate_seg(data, original_sr, target_192_length)
+        
+        # Construct the full path for the output file using powersof2_192_folder
+        output_192_file_path = os.path.join(powersof2_192_folder, filename)
+        
+        # Save the interpolated segment to the powersof2_192_folder
+        sf.write(output_192_file_path, interpolated_data, original_sr, subtype='FLOAT')
+        #print(f"Processed and saved: {filename} to {powersof2_192_folder}")
+
+
+nearest_192_higher_power_of_2 = 2**np.ceil(np.log2(wavecycle_samples_target_192))
+
+# Define the subfolders for original and resampled waveforms
+wvtbls192 = os.path.join(wavetables_folder, '192k32b')  
+
+# Define the output folder for resampled waveforms
+pwrs2_folder = os.path.join(wavetables_folder, 'powersof2')  
+
+# Create the pwrs2_folder if it doesn't exist
+if not os.path.exists(pwrs2_folder):
+    os.makedirs(pwrs2_folder)
+
+# Calculate the nearest_192 higher power of 2
+nearest_192_higher_power_of_2 = 2**np.ceil(np.log2(wavecycle_samples_target_192))
+
+# Define the ratio of the nearest_192 higher power of 2 to wavecycle_samples_target_192
+pwr_of_2_192_ratio = nearest_192_higher_power_of_2 / wavecycle_samples_target_192
+
+print("Power of 2 192 ratio:", pwr_of_2_192_ratio)
 
 # Calculate the target length for all files as the power of 2 target
-pwr_of_2_target = int(round(wavecycle_samples_target_192 * pwr_of_2_ratio))
-print("pwr_of_2_target:", pwr_of_2_target)
+pwr_of_2_192_target = int(round(wavecycle_samples_target_192 * pwr_of_2_192_ratio))
+print(f"pwr_of_2_192_target: {pwr_of_2_192_target} samples")
 
 # Calculate the new target length for all files
-new_target_length = int(round(wavecycle_samples_target_192 * pwr_of_2_ratio))
+target_192_length = int(round(wavecycle_samples_target_192 * pwr_of_2_192_ratio))
 
 # Define the subfolder within 'wavetables/powersof2' named '192' to save the interpolated segments
-subfolder_name = "192"
-powersof2_192_folder = os.path.join(wavetables_folder, "powersof2", subfolder_name)
+subfolder_192_name = "192"
+powersof2_192_folder = os.path.join(wavetables_folder, "powersof2", subfolder_192_name)
 
 # Create the powersof2_192_folder if it doesn't exist
 if not os.path.exists(powersof2_192_folder):
     os.makedirs(powersof2_192_folder)
 
 # Calculate the new target length for all 192k files
-new_target_length = int(round(wavecycle_samples_target_192 * pwr_of_2_ratio))
+target_192_length = int(round(wavecycle_samples_target_192 * pwr_of_2_192_ratio))
 
 for filename in os.listdir(wvtbls192):
     if filename.endswith('.wav'):  # Check if the file is a .wav file
@@ -680,63 +799,62 @@ for filename in os.listdir(wvtbls192):
         data, original_sr = sf.read(input_file_path)
         
         # Use interpolate_seg to resample the segment to the new target length
-        interpolated_data = interpolate_seg(data, original_sr, new_target_length)
+        interpolated_data = interpolate_seg(data, original_sr, target_192_length)
         
         # Construct the full path for the output file using powersof2_192_folder
-        output_file_path = os.path.join(powersof2_192_folder, filename)
+        pwr2_192_file_path = os.path.join(powersof2_192_folder, filename)
         
         # Save the interpolated segment to the powersof2_192_folder
-        sf.write(output_file_path, interpolated_data, original_sr, subtype='PCM_24')
+        sf.write(pwr2_192_file_path, interpolated_data, original_sr, subtype='FLOAT')
         #print(f"Processed and saved: {filename} to {powersof2_192_folder}")
 
+# block 9
+# --- powers of two save as 48k24b---
+print(f"\n48k24b")
+wavecycle_samples_target_48 = round(48000 / sox_pitch)
 
-# --- powers of two ---
-print(f"--- BEGIN POWERS OF 2 ---")
-
-# Assuming 'wavetables_folder' is the base directory for wavetables, as defined in uvar
-# and is already defined in the script
-
-# Define the subfolders for original and resampled waveforms
-wvtbls192 = os.path.join(wavetables_folder, '192k32b')  # Use the actual variable from uvar if it's different
+# Define the subfolders for source waveforms
+wvtbls48 = os.path.join(wavetables_folder, '192')  
 
 # Define the output folder for resampled waveforms
-pwrs2_folder = os.path.join(wavetables_folder, 'powersof2')  # Adjust the subfolder name as needed
+pwrs2_folder = os.path.join(wavetables_folder, 'powersof2') 
+nearest_48_higher_power_of_2 = 2**np.ceil(np.log2(wavecycle_samples_target_48))
 
 # Create the pwrs2_folder if it doesn't exist
 if not os.path.exists(pwrs2_folder):
     os.makedirs(pwrs2_folder)
 
-print(f"Original waveforms folder set to: {wvtbls192}")
-print(f"Resampled waveforms folder set to: {pwrs2_folder}")
+# Define the subfolder within 'wavetables/powersof2' named '48' to save the interpolated segments
+subfolder_48_name = "48"
+powersof2_48_folder = os.path.join(wavetables_folder, "powersof2", subfolder_48_name)
 
-# Calculate the nearest higher power of 2
-nearest_higher_power_of_2 = 2**np.ceil(np.log2(wavecycle_samples_target_192))
 
-# Define the ratio of the nearest higher power of 2 to wavecycle_samples_target_192
-pwr_of_2_ratio = nearest_higher_power_of_2 / wavecycle_samples_target_192
+print(f"Source waveforms folder set to: {wvtbls48}")
+print(f"Resampled waveforms folder set to: {powersof2_48_folder}")
 
-print("Nearest higher power of 2:", nearest_higher_power_of_2)
-print("Power of 2 ratio:", pwr_of_2_ratio)
+# Calculate the nearest_48 higher power of 2
+nearest_48_higher_power_of_2 = 2**np.ceil(np.log2(wavecycle_samples_target_48))
 
-# save pwrof2 192k files to tmp
+# Define the ratio of the nearest_48 higher power of 2 to wavecycle_samples_target_48
+pwr_of_2_48_ratio = nearest_48_higher_power_of_2 / wavecycle_samples_target_48
+
+
+print("Power of 2, 48K ratio:", pwr_of_2_48_ratio)
 
 # Calculate the target length for all files as the power of 2 target
-pwr_of_2_target = int(round(wavecycle_samples_target_192 * pwr_of_2_ratio))
-print("pwr_of_2_target:", pwr_of_2_target)
+pwr_of_2_48_target = int(round(wavecycle_samples_target_192 * pwr_of_2_48_ratio))
+
 
 # Calculate the new target length for all files
-new_target_length = int(round(wavecycle_samples_target_192 * pwr_of_2_ratio))
+target_48_length = int(round(wavecycle_samples_target_192 * pwr_of_2_48_ratio))
 
-# Define the subfolder within 'wavetables/powersof2' named '192' to save the interpolated segments
-subfolder_name = "192"
-powersof2_192_folder = os.path.join(wavetables_folder, "powersof2", subfolder_name)
 
-# Create the powersof2_192_folder if it doesn't exist
-if not os.path.exists(powersof2_192_folder):
-    os.makedirs(powersof2_192_folder)
+# Create the powersof2_48_folder if it doesn't exist
+if not os.path.exists(powersof2_48_folder):
+    os.makedirs(powersof2_48_folder)
 
 # Calculate the new target length for all files
-new_target_length = int(round(wavecycle_samples_target_192 * pwr_of_2_ratio))
+target_48_length = int(round(wavecycle_samples_target_192 * pwr_of_2_48_ratio))
 
 for filename in os.listdir(wvtbls192):
     if filename.endswith('.wav'):  # Check if the file is a .wav file
@@ -747,16 +865,16 @@ for filename in os.listdir(wvtbls192):
         data, original_sr = sf.read(input_file_path)
         
         # Use interpolate_seg to resample the segment to the new target length
-        interpolated_data = interpolate_seg(data, original_sr, new_target_length)
+        interpolated_data = interpolate_seg(data, original_sr, target_48_length)
         
-        # Construct the full path for the output file using powersof2_192_folder
-        output_file_path = os.path.join(powersof2_192_folder, filename)
+        # Construct the full path for the output file using powersof2_48_folder
+        output_pwr2_48_file_path = os.path.join(powersof2_48_folder, filename)
         
-        # Save the interpolated segment to the powersof2_192_folder
-        sf.write(output_file_path, interpolated_data, original_sr, subtype='PCM_24')
-        #print(f"Processed and saved: {filename} to {powersof2_192_folder}")
+        # Save the interpolated segment to the powersof2_48_folder
+        sf.write(output_pwr2_48_file_path, interpolated_data, original_sr, subtype='FLOAT')
+        #print(f"Processed and saved: {filename} to {powersof2_48_folder}")
 
-
+# Resample to 48k24b power of two files
 # Define the source folder for the original waveforms (48k24b)
 wvtbls48 = os.path.join(wavetables_folder, '48k24b')
 
@@ -764,34 +882,23 @@ wvtbls48 = os.path.join(wavetables_folder, '48k24b')
 original_sr_48 = 48000
 
 # Define the output folder for resampled waveforms within 'powersof2'
-pwrs2_folder = os.path.join(wavetables_folder, 'powersof2')
+pwr2_48_folder = os.path.join(wavetables_folder, 'powersof2', '48')
 
-# Create the pwrs2_folder if it doesn't exist
-if not os.path.exists(pwrs2_folder):
-    os.makedirs(pwrs2_folder)
+# Create the pwr2_48_folder if it doesn't exist
+if not os.path.exists(pwr2_48_folder):
+    os.makedirs(pwr2_48_folder)
 
-print(f"Original 48k waveforms folder set to: {wvtbls48}")
-print(f"Resampled waveforms folder set to: {pwrs2_folder}")
+# Calculate the nearest_48 higher power of 2
+nearest_48_higher_power_of_2 = 2**np.ceil(np.log2(wavecycle_samples_target_48))
 
-# Calculate the nearest higher power of 2
-nearest_higher_power_of_2 = 2**np.ceil(np.log2(wavecycle_samples_target_192))
-
-# Define the ratio of the nearest higher power of 2 to wavecycle_samples_target_192
-pwr_of_2_ratio = nearest_higher_power_of_2 / wavecycle_samples_target_192
-
-print("Nearest higher power of 2:", nearest_higher_power_of_2)
-print("Power of 2 ratio:", pwr_of_2_ratio)
-
-# Define the subfolder within 'wavetables/powersof2' named '48' to save the interpolated segments
-subfolder_name = "48"
-powersof2_48_folder = os.path.join(pwrs2_folder, subfolder_name)
-
-# Create the powersof2_48_folder if it doesn't exist
-if not os.path.exists(powersof2_48_folder):
-    os.makedirs(powersof2_48_folder)
+# Define the ratio of the nearest_48 higher power of 2 to wavecycle_samples_target_48
+pwr_of_2_48_ratio = nearest_48_higher_power_of_2 / wavecycle_samples_target_48
 
 # Calculate the new target length for all files
-new_target_length = int(round(wavecycle_samples_target_192 * pwr_of_2_ratio))
+target_48_length = int(round(wavecycle_samples_target_192 * pwr_of_2_48_ratio))
+
+# Counter to keep track of the file number
+file_counter = 1
 
 for filename in os.listdir(wvtbls48):
     if filename.endswith('.wav'):  # Check if the file is a .wav file
@@ -802,13 +909,258 @@ for filename in os.listdir(wvtbls48):
         data, original_sr = sf.read(input_file_path)
         
         # Use interpolate_seg to resample the segment to the new target length
-        interpolated_data = interpolate_seg(data, original_sr_48, new_target_length)
+        interpolated_data = interpolate_seg(data, original_sr_48, target_48_length)
         
-        # Construct the full path for the output file using powersof2_48_folder
-        output_file_path = os.path.join(powersof2_48_folder, filename)
+        # Construct the new filename using the desired format: {base}_pwr2_48k24b_NNNN{ext}
+        pwr2_48_file_name = f"{base}_pwr2_48k24b_{file_counter:04d}{ext}"
         
-        # Save the interpolated segment to the powersof2_48_folder
-        sf.write(output_file_path, interpolated_data, original_sr_48, subtype='PCM_24')
-        print(f"Processed and saved: {filename} to {powersof2_48_folder}")
+        # Construct the full path for the output file using pwr2_48_folder
+        output_pwr2_48_file_path = os.path.join(pwr2_48_folder, pwr2_48_file_name)
+        
+        # Save the interpolated segment to the pwr2_48_folder
+        sf.write(output_pwr2_48_file_path, interpolated_data, original_sr_48, subtype='FLOAT')
+        
+        # Increment the file counter
+        file_counter += 1
 
+print(f"pwr_of_2_48_target: {pwr_of_2_48_target}")
+print(f"pwr2_48_folder: {pwr2_48_folder}")
+print(f"last saved: {output_pwr2_48_file_path}") 
+
+
+# block 10
+# --- Combining Specified Number of Wavecycles into a Single File ---
+print("\n--- Combining Specified Number of Wavecycles ---")
+
+# Define the actual source directory for 48k power of 2 waveforms
+source_48k_pwr2 = os.path.join(pwrs2_folder, "48")  # This is the directory where the actual waveforms are stored
+
+# Use the `/wavetables/192k32b` directory only to determine the count for total_files_in_48_folder
+total_files_in_48_folder = len([f for f in os.listdir(wvtbls192) if f.endswith(ext)])  # Defined in uvar
+
+# Specify the number of frames to combine
+frames_to_combine = 256  # Adjust this value as needed
+
+# Assuming other initializations and definitions are done above
+
+# Calculate the highest possible starting frame
+highest_start_frame = max(0, total_files_in_48_folder - frames_to_combine)
+
+if highest_start_frame > 0:
+    # Initialize an empty list to hold all 48k frames for combination
+    combined_256_frames = []
+
+    # Prompt the user for the starting frame within the valid range
+    while True:
+        start_frame_input = input(f"Enter the starting frame (1 to {highest_start_frame}): ")
+        try:
+            start_frame = int(start_frame_input)
+            if 1 <= start_frame <= highest_start_frame:
+                break
+            else:
+                print(f"Please enter a number within the range 1 to {highest_start_frame}.")
+        except ValueError:
+            print("Invalid input. Please enter a valid number.")
+
+    # Continue with combining frames...
+    # (Your existing code for combining frames goes here)
+
+else:
+    # Not enough frames to proceed with user input, use backfill method
+    print("Not enough frames to complete forward fill. Performing forward-backward fill...")
+    # Calculate the number of frames to fill backward
+    backward_fill_count = frames_to_combine - total_files_in_48_folder
+
+    # Initialize the list for the combined frames
+    combined_frames = []
+
+    # Forward fill with available frames
+    for filename in sorted(os.listdir(source_48k_pwr2))[:total_files_in_48_folder]:
+        if filename.endswith(ext):
+            file_path = os.path.join(source_48k_pwr2, filename)
+            waveform, sr = sf.read(file_path)
+            combined_frames.append(waveform)
+
+    # Backward and inverted fill for the remainder
+    for filename in sorted(os.listdir(source_48k_pwr2))[-backward_fill_count:]:
+        if filename.endswith(ext):
+            file_path = os.path.join(source_48k_pwr2, filename)
+            waveform, sr = sf.read(file_path)
+            inverted_waveform = -np.flip(waveform)
+            combined_frames.append(inverted_waveform)
+
+    # Concatenate all frames along the first axis (time axis)
+    combined_frame = np.concatenate(combined_frames, axis=0)
+
+    # Define the output file name
+    output_file_name = f"{base}_combined_backfilled_{frames_to_combine}_frames{ext}"
+
+    # Construct the full path for the output file
+    output_file_path = os.path.join(pwrs2_folder, output_file_name)
+
+    # Write the combined frames to the output file
+    sf.write(output_file_path, combined_frame, sr, subtype='PCM_24')
+
+    print(f"Backfilled combined file created at {output_file_path}")
+
+# block 11
+print("\nSerum 192k wt")
+
+# Define the subfolders for original and resampled waveforms
+wvtbls192 = os.path.join(wavetables_folder, '192k32b')
+target_wt192_length = 2048  # Serum standard wt target length for all files
+
+# Define and create the output folder for resampled waveforms
+pwrs2_folder = os.path.join(wavetables_folder, 'powersof2')
+os.makedirs(pwrs2_folder, exist_ok=True)
+
+# Define and create the subfolder within 'powersof2' named 'wt192'
+subfolder_wt192_name = "wt192"
+powersof2_wt192_folder = os.path.join(pwrs2_folder, subfolder_wt192_name)
+os.makedirs(powersof2_wt192_folder, exist_ok=True)
+
+print(f"Source 192 waveforms folder set to: {wvtbls192}")
+print(f"Resampled waveforms folder set to: {powersof2_wt192_folder}")
+
+# Calculate the ratio of the 2048 to wavecycle_samples_target_192
+pwr_of_2_wt192_ratio = target_wt192_length / wavecycle_samples_target_192
+print(f"pwr_of_2_wt192_ratio: {pwr_of_2_wt192_ratio}")
+
+# Calculate the target length for wt192K files as the power of 2 target
+pwr_of_2_wt192_target = int(round(wavecycle_samples_target_192 * pwr_of_2_wt192_ratio))
+print(f"2048 = {pwr_of_2_wt192_target}?")
+
+for filename in os.listdir(wvtbls192):
+    if filename.endswith('.wav'):
+        wvtbl_192_path = os.path.join(wvtbls192, filename)
+        data, original_sr = sf.read(wvtbl_192_path)
+        interpolated_data = interpolate_seg(data, original_sr, target_wt192_length)
+        output_wt192_file_path = os.path.join(powersof2_wt192_folder, filename)
+        sf.write(output_wt192_file_path, interpolated_data, original_sr, subtype='FLOAT')
+
+# Combining Specified Number of Wavecycles into a Single File
+print("...combining 2048 sample by 256 frame serum wavetable as wav file...")
+
+total_files_in_wt192_folder = len([f for f in os.listdir(wvtbls192) if f.endswith(ext)])
+frames_to_combine_wt = 256  # 256 is the wt for serum standard
+wt192_count_remainder = frames_to_combine_wt - total_files_in_wt192_folder
+print(f"Available Frames = {total_files_in_wt192_folder}")
+print(f"frames to fill (ignore if negative)  = {wt192_count_remainder}")
+
+if total_files_in_wt192_folder == 0:
+    print("Aborting: No frames available to combine. Please check the source directory.")
+    exit()
+
+elif total_files_in_wt192_folder == frames_to_combine_wt:
+    print("2048 frames available. Proceeding with combination...")
+    combined_wt192_frames = []
+    
+    for filename in sorted(os.listdir(powersof2_wt192_folder)):
+        if filename.endswith(ext):
+            file_path = os.path.join(powersof2_wt192_folder, filename)
+            waveform, sr = sf.read(file_path)
+            combined_wt192_frames.append(waveform)
+
+    combined_wt192_frame = np.concatenate(combined_wt192_frames, axis=0)
+    combined_wt192_frame_out = f"{base}_wt192_full_frame{ext}"
+    output_file_path = os.path.join(pwrs2_wt192_folder, combined_wt192_frame_out)
+    sf.write(output_file_path, combined_wt192_frame, sr, subtype='FLOAT')
+    print(f"Combined full frame saved as: {output_file_path}")
+
+elif total_files_in_wt192_folder > frames_to_combine_wt:
+    highest_start_frame_wt192 = max(1, total_files_in_wt192_folder - frames_to_combine_wt + 1)
+    if highest_start_frame_wt192 > 1:
+        # Prompt the user for the starting frame within the valid range
+        while True:
+            start_frame_wt192_input = input(f"Enter the starting frame (1 to {highest_start_frame_wt192}): ")
+            try:
+                start_frame_wt192 = int(start_frame_wt192_input)
+                if 1 <= start_frame_wt192 <= highest_start_frame_wt192:
+                    break
+                else:
+                    print(f"Please enter a number within the range 1 to {highest_start_frame_wt192}.")
+            except ValueError:
+                print("Invalid input. Please enter a valid number.")
+
+        # Calculate the ending frame based on the selected starting frame
+        ending_frame_wt192 = start_frame_wt192 + frames_to_combine_wt - 1
+
+        # Initialize the list for the combined frames
+        combined_192k_256_frames = []
+
+        # Iterate through the files in the source directory starting from the selected frame
+        for filename in sorted(os.listdir(powersof2_wt192_folder))[start_frame_wt192 - 1:ending_frame_wt192]:
+            if filename.endswith(ext):
+                # Construct the full path for the file
+                file_path = os.path.join(powersof2_wt192_folder, filename)
+                
+                # Read the waveform data
+                waveform, sr = sf.read(file_path)
+                
+                # Append the waveform data to the combined_192k_256_frames list
+                combined_192k_256_frames.append(waveform)
+
+        # Concatenate all frames along the first axis (time axis)
+        combined_192k_2048_frame_wt192k = np.concatenate(combined_192k_256_frames, axis=0)
+
+        # Define the output file name with the starting frame included
+        combined_192k_2048_frame_out = f"{base}_wt192k24b_start{start_frame_wt192:04d}_{frames_to_combine_wt}_frame{ext}"
+
+        # Construct the full path for the output file
+        output_file_path = os.path.join(pwrs2_folder, combined_192k_2048_frame_out)
+
+        # Write the combined frames to the output file
+        sf.write(output_file_path, combined_192k_2048_frame_wt192k, sr, subtype='FLOAT')
+
+        print(f"Combined {frames_to_combine_wt} frames starting from frame {start_frame_wt192} saved as: {output_file_path}")
+
+else:
+    # Not enough frames to complete forward fill. Performing forward-backward fill...
+    print("Not enough frames to complete forward fill. Performing forward-backward fill...")
+    backward_fill_count = frames_to_combine_wt - total_files_in_wt192_folder
+
+    # Initialize the list for the combined frames
+    combined_frames = []
+
+    # Forward fill with available frames
+    for filename in sorted(os.listdir(powersof2_wt192_folder))[:total_files_in_wt192_folder]:
+        if filename.endswith(ext):
+            file_path = os.path.join(powersof2_wt192_folder, filename)
+            waveform, sr = sf.read(file_path)
+            combined_frames.append(waveform)
+
+    # Backward and inverted fill for the remainder
+    for filename in sorted(os.listdir(powersof2_wt192_folder))[-backward_fill_count:]:
+        if filename.endswith(ext):
+            file_path = os
+
+    # Forward fill with available frames
+    for filename in sorted(os.listdir(powersof2_wt192_folder))[:total_files_in_wt192_folder]:
+        if filename.endswith(ext):
+            file_path = os.path.join(powersof2_wt192_folder, filename)
+            waveform, sr = sf.read(file_path)
+            combined_frames.append(waveform)
+    
+    # Backward and inverted fill for the remainder
+    for filename in sorted(os.listdir(powersof2_wt192_folder))[-backward_fill_count:]:
+        if filename.endswith(ext):
+            file_path = os.path.join(powersof2_wt192_folder, filename)
+            waveform, sr = sf.read(file_path)
+            inverted_waveform = -np.flip(waveform)
+            combined_frames.append(inverted_waveform)
+    
+    # Concatenate all frames along the first axis (time axis)
+    combined_frame = np.concatenate(combined_frames, axis=0)
+
+    # Define the output file name
+    output_file_name = f"{base}_combined_backfilled_{frames_to_combine_wt}_frames{ext}"
+
+    # Construct the full path for the output file
+    output_file_path = os.path.join(pwrs2_folder, output_file_name)
+
+    # Write the combined frames to the output file
+    sf.write(output_file_path, combined_frame, sr, subtype='FLOAT')
+
+    print(f"Backfilled combined file created at {output_file_path}")
+# block 12
 print(f"\n\nDONE")
