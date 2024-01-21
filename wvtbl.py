@@ -4,7 +4,6 @@ import os
 import sys
 import wave
 import crepe
-# import aubio
 import librosa
 import re
 import shutil
@@ -13,6 +12,7 @@ import subprocess
 import numpy as np
 import soundfile as sf
 from scipy.io import wavfile
+from scipy import stats
 from pydub import AudioSegment
 from scipy.interpolate import interp1d
 import warnings
@@ -35,7 +35,7 @@ start_file= os.path.join(source_folder, start_file)  # Using the first argument 
 print(f"File to be processed: {start_file}")
 # Check if the start file exists within the source folder
 if not os.path.exists(start_file):
-    print(f"The start file '{start_file}' does not exist in the source folder. Please ensure the file is there and try again.")
+    print(f"'{start_file}' does not exist in the source folder. Please ensure the file is there and try again.")
     sys.exit(1)
 
 # Load the waveform and sample rate from the input file
@@ -74,18 +74,15 @@ os.makedirs(single_cycles_folder, exist_ok=True)
 single_cycles_192k32b = os.path.join(single_cycles_folder, '192k32b')
 os.makedirs(single_cycles_192k32b, exist_ok=True)
 
-single_cycles_192k_2048samples = os.path.join(single_cycles_folder, '192k_2048samples')
-os.makedirs(single_cycles_192k_2048samples, exist_ok=True)
+pwr2_192_2048 = os.path.join(single_cycles_folder, 'pwr2_192_2048')
+os.makedirs(pwr2_192_2048, exist_ok=True)
 
 # Define and create the output folder for the 256 frame combined files for Serum wavetables
 serum_wavetable_folder = os.path.join(base, 'serum_wavetable')
 os.makedirs(serum_wavetable_folder, exist_ok=True)
 
-serum_wavetable_folder = os.path.join(base, 'serum_wavetable')
-os.makedirs(serum_wavetable_folder, exist_ok=True)
-
-serum_2048x256 = os.path.join(serum_wavetable_folder, 'serum_2048x256')
-os.makedirs(serum_2048x256, exist_ok=True)
+# serum_2048x256 = os.path.join(serum_wavetable_folder, 'serum_2048x256')
+# os.makedirs(serum_2048x256, exist_ok=True)
 
 base_prep_192k32b_path = os.path.join(tmp_folder, base_prep_192k32b)
 # print(f"{base_prep_192k32b_path}")
@@ -209,13 +206,29 @@ def test_crepe(base_prep_192k32b_path):
     time, frequency, confidence, activation = crepe.predict(base_prep_192k32b_data, sr, viterbi=True) 
     return frequency, confidence  # Returns frequency and confidence of prediction
 
+def frequency_to_note(frequency, A4=440):
+    """
+    Maps a given frequency to the nearest equal temperament note.
+    A4 is set to 440 Hz by default.
+    """
+    if frequency <= 0:
+        return None
+    # Calculate the number of half steps away from A4
+    half_steps = 12 * np.log2(frequency / A4)
+    # Round to the nearest half step to get the equal temperament note
+    nearest_half_step = int(round(half_steps))
+    # Convert back to frequency
+    nearest_frequency = A4 * 2 ** (nearest_half_step / 12)
+    return nearest_frequency
+
+
 def combine_and_save_frames(start_frame, frame_count):
     combined_frames = []
     ending_frame = start_frame + frame_count - 1
 
-    for filename in sorted(os.listdir(single_cycles_192k_2048samples))[start_frame - 1:ending_frame]:
+    for filename in sorted(os.listdir(pwr2_192_2048))[start_frame - 1:ending_frame]:
         if filename.endswith(ext):
-            file_2048_path = os.path.join(single_cycles_192k_2048samples, filename)
+            file_2048_path = os.path.join(pwr2_192_2048, filename)
             waveform, sr = sf.read(file_2048_path)
             combined_frames.append(waveform)
 
@@ -229,22 +242,22 @@ def perform_backfill_and_invert():
     backward_fill_count = frames_to_combine_wt - total_files_in_single_cycles_192k32b
     combined_frames = []
 
-    for filename in sorted(os.listdir(single_cycles_192k_2048samples))[:total_files_in_single_cycles_192k32b]:
+    for filename in sorted(os.listdir(pwr2_192_2048))[:total_files_in_single_cycles_192k32b]:
         if filename.endswith(ext):
-            file_2048_path = os.path.join(pwr2_192_folder, filename)
+            file_2048_path = os.path.join(pwr2_192_2048, filename)
             waveform, sr = sf.read(file_2048_path)
             combined_frames.append(waveform)
     
-    for filename in sorted(os.listdir(pwr2_192_folder))[-backward_fill_count:]:
+    for filename in sorted(os.listdir(pwr2_192_2048))[-backward_fill_count:]:
         if filename.endswith(ext):
-            file_2048_path = os.path.join(pwr2_192_folder, filename)
+            file_2048_path = os.path.join(pwr2_192_2048, filename)
             waveform, sr = sf.read(file_2048_path)
             inverted_waveform = -np.flip(waveform)
             combined_frames.append(inverted_waveform)
     
     combined_frame = np.concatenate(combined_frames, axis=0)
     backfill_file_name = f"{base}_combined_backfilled_{frames_to_combine_wt}_frames{ext}"
-    backfill_file_path = os.path.join(single_cycles_192k_2048samples, backfill_file_name)
+    backfill_file_path = os.path.join(pwr2_192_2048, backfill_file_name)
     sf.write(backfill_file_path, combined_frame, sr, subtype='FLOAT')
     print(f"Backfilled combined file created at {backfill_file_path}")
 
@@ -252,7 +265,7 @@ def perform_backfill_and_invert():
 # block 3
 
 # begin upsample section
-print("\nUpsample section")
+print("\nUpsampling source and fading in and out ...")
 
 # Load the waveform and sample rate from the input file
 sample_rate, bit_depth = wavfile.read(start_file)
@@ -297,14 +310,14 @@ interpolated_input_192k32b[-fade_samples:] *= fade_window[::-1]
 
 # Save the faded audio to a new file
 wavfile.write("faded_output.wav", 192000, interpolated_input_192k32b)
-print(f"Start file upsample and faded in+out, written to base_prep_192k32b_path ...")
+print(f"Source file upsampled to {base_prep_192k32b_path}")
 
 
 # upsample ends here...begin pitch section
-print(f"\nEnd Upsample...\n...Begin AI Pitch detection of {base_prep_192k32b_path}\n")
+print(f"\nAI Pitch detect {base_prep_192k32b_path}\n")# Pitch finding using crepe neural net
 
-# Pitch finding using crepe neural net   
-   
+# Pitch finding using crepe neural net
+
 print("⌄⌄⌄⌄⌄⌄⌄⌄⌄⌄IGNORE THESE WARNINGS⌄⌄⌄⌄⌄⌄⌄⌄⌄⌄")  
 frequency_test, confidence_test = test_crepe(base_prep_192k32b_path)
 
@@ -315,27 +328,49 @@ upper_bound_crepe = 880  # Adjust this upper bound as needed
 # Filter frames that meet the criterion within the specified range
 filtered_frames_crepe = frequency_test[(frequency_test >= lower_bound_crepe) & (frequency_test <= upper_bound_crepe)]
 
-# Calculate the average frequency and confidence of the filtered frames
-average_frequency_crepe = np.mean(filtered_frames_crepe)
+# Calculate the mode frequency and confidence of the filtered frames
+mode_frequency_crepe = np.mean(filtered_frames_crepe)
+mode_confidence_crepe = np.mean(confidence_test[(frequency_test >= lower_bound_crepe) & (frequency_test <= upper_bound_crepe)])
+mode_frequency_crepe_int = round(mode_frequency_crepe)
+mode_confidence_crepe_int = round(mode_confidence_crepe * 100)
 
-# You can round the average frequency to an integer if needed
-average_frequency_crepe_int = round(average_frequency_crepe)
+# Prepare frequencies for mode calculation
+filtered_frequencies = [frequency for frequency in frequency_test if lower_bound_crepe <= frequency <= upper_bound_crepe]
+mapped_frequencies = [frequency_to_note(f) for f in filtered_frequencies]
 
-average_confidence_crepe = np.mean(confidence_test[(frequency_test >= lower_bound_crepe) & (frequency_test <= upper_bound_crepe)])
-average_frequency_crepe_int=round(average_frequency_crepe)
-average_confidence_crepe_int=round(average_confidence_crepe * 100)
+if len(mapped_frequencies) > 0:
+    mode_result = stats.mode(mapped_frequencies)
+    if isinstance(mode_result.mode, np.ndarray) and mode_result.mode.size > 0:
+        mode_frequency = mode_result.mode[0]
+    else:
+        mode_frequency = mode_result.mode  # mode is a scalar
+
+    # Filter confidences corresponding to the mode frequency
+    mode_confidences = [confidence_test[i] for i, f in enumerate(filtered_frequencies) if frequency_to_note(f) == mode_frequency]
+
+    # Calculate the mode confidence for the mode frequency
+    mode_confidence_avg = np.mean(mode_confidences) if len(mode_confidences) > 0 else 0
+else:
+    print("No frequencies to process.")
+    mode_frequency = None
+    mode_confidence_avg = 0
+
+# Output the results
 print("⌃⌃⌃⌃⌃⌃⌃⌃⌃⌃END OF JUNK TO IGNORE⌃⌃⌃⌃⌃⌃⌃⌃⌃⌃\n")
+print("\nCREPE neural net pitch detection results:")
 
-print("\nCREPE neural net pitch detection")
-print(f"Average Frequency: {average_frequency_crepe_int} Hz")
-print(f"Average Confidence: {average_confidence_crepe_int}%")
-
+if mode_frequency is not None:
+    print(f"Mode Frequency: {mode_frequency} Hz (within -49 to +50 cents range)")
+    print(f"mode Confidence for Mode Frequency: {round(mode_confidence_avg * 100)}%")
+else:
+    print("No mode frequency found within the specified range.")
 
 # --- "pitch" section ends here ---
 
+
 # block 4
 # --- begin "segmentation" section ---
-print("\nSegmentation section")
+print("\nSegmentation underway...")
 
 segment_sizes = []  # Initialize the list to hold segment sizes
 prev_start_index = 0  # Start from the beginning
@@ -430,13 +465,13 @@ if prev_start_index < len(data):
     #  print(f"Debug: Final segment {segment_index} written: {tmp_base_seg_path}")
     segment_index += 1
 
-print(f"Segmentation complete. {segment_index -2} segments were created and saved in {tmp_folder}.")
+print(f"{segment_index -2} segments  in temporary folder.")
 
 
 # block 5
 
 # --- begin "sort and label segments" ---
-print("Starting sorting and labeling segments.")
+print("Sorting and labeling segments...")
 
 # check for short wavecycles
 plus_minus_tolerance_percent = 50
@@ -451,15 +486,14 @@ wavecycle_samples_target_192 = None  # Or some default value if appropriate
 try:
     
 
-    # Check if average_frequency_crepe_int is non-zero before using it to update wavecycle_samples_target to wavecycle_samples_target_192
-    if average_frequency_crepe_int != 0:
-        print(f"Pitch calculated using crepe: {average_frequency_crepe_int} Hz")
-        wavecycle_samples_target_192 = round(192000 / average_frequency_crepe_int)
+    # Check if mode_frequency_crepe_int is non-zero before using it to update wavecycle_samples_target to wavecycle_samples_target_192
+    if mode_frequency_crepe_int != 0:
+        wavecycle_samples_target_192 = round(192000 / mode_frequency_crepe_int)
         print(f"Target wave cycle samples (wavecycle_samples_target_192): {wavecycle_samples_target_192}")
     else:
         print("Warning: Crepe pitch is zero or undetermined. Unable to create wavecycle_samples_target_192.")
 except Exception as e:
-    average_frequency_crepe_int = 0
+    mode_frequency_crepe_int = 0
     print(f"Error: {e}")
 
 # Calculate the upper and lower bounds for the number of samples
@@ -564,7 +598,7 @@ if not any_outside_tolerance_renamed:
 
 # block 7
 # ---INTERPOLATION ---
-print("begin interpolation")
+print("\nInterpolating...")
 # Initialize the list to store interpolation ratios
 interpolation_ratios = []
 
@@ -625,7 +659,8 @@ for file in os.listdir(tmp_folder):
             print(f"Invalid segment index in filename: {file}")
 
     else:
-        print(f"File does not match pattern: {file}")
+        # print(f"DEBUG: File does not match pattern: {file}")
+        print("\nChecking Lengths...")
 
 # block 8
 
@@ -644,7 +679,7 @@ for file in os.listdir(single_cycles_192k32b):
         
         # Check if the length of the data matches the target
         if len(data) != wavecycle_samples_target_192:
-            print(f"Debug: File {file} has incorrect length: {len(data)} samples (expected {wavecycle_samples_target_192})")
+            # print(f"Debug: File {file} has incorrect length: {len(data)} samples (expected {wavecycle_samples_target_192})")
             incorrect_lengths += 1
             incorrect_files.append(file)  # Add the file name to the list
 
@@ -675,12 +710,12 @@ for file in incorrect_files:
     # Calculate the new ratio for this specific file based on its length
     new_ratio = wavecycle_samples_target_192 / original_length
     
-    print(f"Processing {file}: Original length: {original_length}, Target length: {wavecycle_samples_target_192}, Ratio: {new_ratio}")
+    # print(f"DEBUG: Processing {file}: Original length: {original_length}, Target length: {wavecycle_samples_target_192}, Ratio: {new_ratio}")
     
     # Interpolate the data to the correct length
     correct_length_data = interpolate_seg(data, samplerate, wavecycle_samples_target_192)
     
-    print(f"Corrected length: {len(correct_length_data)} (Expected: {wavecycle_samples_target_192})")
+    # print(f"DEBUG: Corrected length: {len(correct_length_data)} (Expected: {wavecycle_samples_target_192})")
 
     # Determine the subtype for writing
     info = sf.info(file_path)
@@ -688,18 +723,16 @@ for file in incorrect_files:
     
     # Write the interpolated data back to the original file name
     sf.write(file_path, correct_length_data, samplerate, subtype=write_subtype)
-    print(f"Wrote corrected data to {file_path}")
+    # print(f"DEBUG: Wrote corrected data to {file_path}")
 
 # block 9
 # --- powers of two ---
-print(f"--- BEGIN POWERS OF 2 ---")
-
-print("192k")
+print(f"\nChanging single cycles to nearest power of 2 number of samples..")
 
 nearest_192_higher_pwr2 = int(2**np.ceil(np.log2(wavecycle_samples_target_192)))
 
-serum_pwr2_any = os.path.join(serum_wavetable_folder, f'192k_pwr2_{int(nearest_192_higher_pwr2)}')
-os.makedirs(serum_pwr2_any, exist_ok=True)
+# serum_pwr2_any = os.path.join(serum_wavetable_folder, f'192k_pwr2_{int(nearest_192_higher_pwr2)}')
+# os.makedirs(serum_pwr2_any, exist_ok=True)
 
 # Define the single cycle folder named '192' to save the interpolated segments in
 subfolder_192_name = "192"
@@ -709,8 +742,8 @@ single_cycles_pwr2_any = os.path.join(single_cycles_folder, f'192k_pwr2_{nearest
 if not os.path.exists(single_cycles_pwr2_any):
     os.makedirs(single_cycles_pwr2_any)
 
-print(f"Source 192 waveforms folder set to: {single_cycles_192k32b}")
-print(f"Resampled waveforms folder set to: {single_cycles_pwr2_any}")
+# print(f"DEBUG: Source 192 waveforms folder set to: {single_cycles_192k32b}")
+# print(f"DEBUG: Resampled waveforms folder set to: {single_cycles_pwr2_any}")
 
 # Define the ratio of the nearest higher power of 2 to wavecycle_samples_target_192
 pwr_of_2_192_ratio = nearest_192_higher_pwr2 / wavecycle_samples_target_192
@@ -738,37 +771,46 @@ for filename in os.listdir(single_cycles_192k32b):
 
 # block 10
 # --- Combining Specified Number of Wavecycles into a Single File ---
-print("\n--- Combining Specified Number of Wavecycles ---")
+print("\nCombining single cycles to 256 frames ---")
 
 # Use the `single_cycles_192k32b` directory to determine the count for total_files_in_single_cycles_192k32b
 total_files_in_single_cycles_192k32b = len([f for f in os.listdir(single_cycles_192k32b) if f.endswith(ext)])
 
 # Specify the number of frames to combine
-frames_to_combine = 256  # Adjust this value as needed
+frames_to_combine_wt = 256  # Adjust this value as needed
 
-# Assuming other initializations and definitions are done above
+# Ensure there are enough frames available
+if total_files_in_single_cycles_192k32b >= frames_to_combine_wt:
+    highest_start_frame_wt = total_files_in_single_cycles_192k32b - frames_to_combine_wt + 1
 
-# Calculate the highest possible starting frame
-highest_start_frame = max(0, total_files_in_single_cycles_192k32b - frames_to_combine)
-
-if highest_start_frame > 0:
-    # Initialize an empty list to hold all frames for combination
-    combined_256_frames = []
-
-    # Prompt the user for the starting frame within the valid range
-    while True:
-        start_frame_input = input(f"Enter the starting frame (1 to {highest_start_frame}): ")
-        try:
-            start_frame = int(start_frame_input)
-            if 1 <= start_frame <= highest_start_frame:
-                break
-            else:
-                print(f"Please enter a number within the range 1 to {highest_start_frame}.")
-        except ValueError:
-            print("Invalid input. Please enter a valid number.")
+    # Prompt the user for the starting frame within the valid range, if more than one choice is available
+    if highest_start_frame_wt > 1:
+        while True:
+            start_frame_wt_input = input(f"Enter the starting frame (1 to {highest_start_frame_wt}): ")
+            try:
+                start_frame_wt = int(start_frame_wt_input)
+                if 1 <= start_frame_wt <= highest_start_frame_wt:
+                    break
+                else:
+                    print(f"Please enter a number within the range 1 to {highest_start_frame_wt}.")
+            except ValueError:
+                print("Invalid input. Please enter a valid number.")
+    else:
+        start_frame_wt = 1  # Default to the first frame if only one choice is available
 
     # Continue with combining frames...
-    # (Your existing code for combining frames goes here)
+    combined_wt_frames = []
+    for filename in sorted(os.listdir(single_cycles_192k32b))[start_frame_wt - 1:start_frame_wt - 1 + frames_to_combine_wt]:
+        if filename.endswith(ext):
+            file_path = os.path.join(single_cycles_192k32b, filename)
+            waveform, sr = sf.read(file_path)
+            combined_wt_frames.append(waveform)
+
+    combined_wt_frame = np.concatenate(combined_wt_frames, axis=0)
+    combined_wt_frame_out = f"{base}_wt_{start_frame_wt:04d}_{frames_to_combine_wt}_frame_orig_pitch{ext}"
+    combined_wt_frame_out_path = os.path.join(serum_wavetable_folder, combined_wt_frame_out)
+    sf.write(combined_wt_frame_out_path, combined_wt_frame, sr, subtype='FLOAT')
+    print(f"Combined {frames_to_combine_wt} frames starting from frame {start_frame_wt} saved as: {combined_wt_frame_out_path}")
 
 else:
     # Not enough frames to proceed with user input, use backfill method
@@ -809,59 +851,55 @@ else:
     print(f"Backfilled combined file created at {backfill_file_path}")
 
 # block 11
-print("\nSerum 192k wt")
+print("\nCreating standard 2048x256 Serum Wavetable...")
 
 # Define the subfolders for original and resampled waveforms
 target_wt192_length = 2048  # Serum standard wt target length for all files
 
 # Define and create the output folder for resampled waveforms
-serum_wavetable_folder = os.path.join(serum_wavetable_folder, 'serum_wavetable')
+# serum_wavetable_folder = os.path.join(serum_wavetable_folder, 'serum_wavetable')
 os.makedirs(serum_wavetable_folder, exist_ok=True)
 
 # Define and create the subfolder within 'pwr2' named 'wt192'
-# need to adjust to account for new folder org
-subfolder_pwr2_192_name = "pwr2_192_2048"
-# need to adjust pwrs2_folder to account for new folder structure.
-pwr2_192_folder = os.path.join(single_cycles_folder, subfolder_pwr2_192_name)
-os.makedirs(pwr2_192_folder, exist_ok=True)
-print(f"pwr2_192_folder set to: {pwr2_192_folder}")
-print(f"Source 192 waveforms folder set to: {single_cycles_192k32b}")
-print(f"Resampled waveforms folder set to: {single_cycles_192k_2048samples}")
+# pwr2_192_2048 = os.path.join(single_cycles_folder, pwr2_192_2048)
+os.makedirs(pwr2_192_2048, exist_ok=True)
+print(f"DEBUG: pwr2_192_2048 set to: {pwr2_192_2048}")
+print(f"DEBUG: Source 192 waveforms folder set to: {single_cycles_192k32b}")
+print(f"DEBUG: Resampled waveforms folder set to: {pwr2_192_2048}")
 
 # Calculate the ratio of the 2048 to wavecycle_samples_target_192
 pwr_of_2_wt192_ratio = target_wt192_length / wavecycle_samples_target_192
-print(f"pwr_of_2_wt192_ratio: {pwr_of_2_wt192_ratio}")
+print(f"interpolation ratio to get to next highest power of two: {round(pwr_of_2_wt192_ratio, 2)}")
 
 # Calculate the target length for wt192K files as the power of 2 target
 pwr_of_2_wt192_target = int(round(wavecycle_samples_target_192 * pwr_of_2_wt192_ratio))
-print(f"2048 = {pwr_of_2_wt192_target}?")
 
 for filename in os.listdir(single_cycles_192k32b):
     if filename.endswith('.wav'):
         wvtbl_192_path = os.path.join(single_cycles_192k32b, filename)
         data, original_sr = sf.read(wvtbl_192_path)
         interpolated_data = interpolate_seg(data, original_sr, target_wt192_length)
-        output_wt192_file_path = os.path.join(pwr2_192_folder, filename)
+        output_wt192_file_path = os.path.join(pwr2_192_2048, filename)
         sf.write(output_wt192_file_path, interpolated_data, original_sr, subtype='FLOAT')
 
 # Combining Specified Number of Wavecycles into a Single File
-print("...combining 2048 sample by 256 frame serum wavetable as wav file...")
+print("combining 2048 sample by 256 frame serum wavetable as wav file...")
 frames_to_combine_wt = 256  # 256 is the wt for serum standard
-wt192_count_remainder = frames_to_combine_wt - total_files_in_single_cycles_192k32b
+wt192_count_remainder = total_files_in_single_cycles_192k32b - frames_to_combine_wt
 
-print(f"Available Frames = {total_files_in_single_cycles_192k32b}")
-print(f"frames to fill (ignore if negative)  = {wt192_count_remainder}")
+# print(f"DEBUG: Available Frames = {total_files_in_single_cycles_192k32b}")
+# print(f"DEBUG: frames to fill (ignore if negative)  = {wt192_count_remainder}")
 
 if total_files_in_single_cycles_192k32b == 0:
-    print("Aborting: No frames available to combine. Please check the source directory.")
+    print("ERROR: No frames available to combine. Please check the source directory.")
     exit()
 
 elif total_files_in_single_cycles_192k32b == frames_to_combine_wt:
     print("2048 frames available. Proceeding with combination...")
     combined_wt192_frames = []
-    for filename in sorted(os.listdir(pwr2_192_folder)):
+    for filename in sorted(os.listdir(pwr2_192_2048)):
         if filename.endswith(ext):
-            file_path = os.path.join(pwr2_192_folder, filename)
+            file_path = os.path.join(pwr2_192_2048, filename)
             waveform, sr = sf.read(file_path)
             combined_wt192_frames.append(waveform)
 
@@ -872,20 +910,12 @@ elif total_files_in_single_cycles_192k32b == frames_to_combine_wt:
     print(f"Combined full frame saved as: {combined_wt192_frame_out_path}")
 
 elif total_files_in_single_cycles_192k32b > frames_to_combine_wt:
-    highest_start_frame_wt192 = max(1, total_files_in_single_cycles_192k32b - frames_to_combine_wt + 1)
+    # print(f"DEBUG: total_files_in_single_cycles_192k32b: {total_files_in_single_cycles_192k32b}, frames_to_combine_wt: {frames_to_combine_wt}")
+    highest_start_frame_wt192 = max(1, total_files_in_single_cycles_192k32b - frames_to_combine_wt)
     if highest_start_frame_wt192 > 1:
-        # Prompt the user for the starting frame within the valid range
-        while True:
-            start_frame_wt192_input = input(f"Enter the starting frame (1 to {highest_start_frame_wt192}): ")
-            try:
-                start_frame_wt192 = int(start_frame_wt192_input)
-                if 1 <= start_frame_wt192 <= highest_start_frame_wt192:
-                    break
-                else:
-                    print(f"Please enter a number within the range 1 to {highest_start_frame_wt192}.")
-            except ValueError:
-                print("Invalid input. Please enter a valid number.")
-
+        # Set the starting frame
+        start_frame_wt192 = start_frame_wt
+        
         # Calculate the ending frame based on the selected starting frame
         ending_frame_wt192 = start_frame_wt192 + frames_to_combine_wt - 1
 
@@ -893,10 +923,10 @@ elif total_files_in_single_cycles_192k32b > frames_to_combine_wt:
         combined_192k_256_frames = []
 
         # Iterate through the files in the source directory starting from the selected frame
-        for filename in sorted(os.listdir(pwr2_192_folder))[start_frame_wt192 - 1:ending_frame_wt192]:
+        for filename in sorted(os.listdir(pwr2_192_2048))[start_frame_wt192 - 1:ending_frame_wt192]:
             if filename.endswith(ext):
                 # Construct the full path for the file
-                file_path = os.path.join(pwr2_192_folder, filename)
+                file_path = os.path.join(pwr2_192_2048, filename)
                 
                 # Read the waveform data
                 waveform, sr = sf.read(file_path)
@@ -908,7 +938,7 @@ elif total_files_in_single_cycles_192k32b > frames_to_combine_wt:
         combined_192k_2048_frame_wt192k = np.concatenate(combined_192k_256_frames, axis=0)
 
         # Define the output file name with the starting frame included
-        combined_192k_2048_frame_out = f"{base}_wt192k24b_start{start_frame_wt192:04d}_{frames_to_combine_wt}_frame{ext}"
+        combined_192k_2048_frame_out = f"{base}_serum_start{start_frame_wt192:04d}_2048x{frames_to_combine_wt}{ext}"
 
         # Construct the full path for the output file
         combined_2048x256_frame_out_path = os.path.join(serum_wavetable_folder, combined_192k_2048_frame_out)
@@ -927,28 +957,28 @@ else:
     combined_frames = []
 
     # Forward fill with available frames
-    for filename in sorted(os.listdir(pwr2_192_folder))[:total_files_in_single_cycles_192k32b]:
+    for filename in sorted(os.listdir(pwr2_192_2048))[:total_files_in_single_cycles_192k32b]:
         if filename.endswith(ext):
-            file_path = os.path.join(pwr2_192_folder, filename)
+            file_path = os.path.join(pwr2_192_2048, filename)
             waveform, sr = sf.read(file_path)
             combined_frames.append(waveform)
 
     # Backward and inverted fill for the remainder
-    for filename in sorted(os.listdir(pwr2_192_folder))[-backward_fill_count:]:
+    for filename in sorted(os.listdir(pwr2_192_2048))[-backward_fill_count:]:
         if filename.endswith(ext):
             file_path = os
 
     # Forward fill with available frames
-    for filename in sorted(os.listdir(pwr2_192_folder))[:total_files_in_single_cycles_192k32b]:
+    for filename in sorted(os.listdir(pwr2_192_2048))[:total_files_in_single_cycles_192k32b]:
         if filename.endswith(ext):
-            file_path = os.path.join(pwr2_192_folder, filename)
+            file_path = os.path.join(pwr2_192_2048, filename)
             waveform, sr = sf.read(file_path)
             combined_frames.append(waveform)
     
     # Backward and inverted fill for the remainder
-    for filename in sorted(os.listdir(pwr2_192_folder))[-backward_fill_count:]:
+    for filename in sorted(os.listdir(pwr2_192_2048))[-backward_fill_count:]:
         if filename.endswith(ext):
-            file_path = os.path.join(pwr2_192_folder, filename)
+            file_path = os.path.join(pwr2_192_2048, filename)
             waveform, sr = sf.read(file_path)
             inverted_waveform = -np.flip(waveform)
             combined_frames.append(inverted_waveform)
