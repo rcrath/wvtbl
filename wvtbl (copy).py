@@ -16,13 +16,12 @@ from scipy import stats
 from pydub import AudioSegment
 from scipy.interpolate import interp1d
 import warnings
-from math import log2, isclose
 
 # Check if the correct number of command-line arguments are provided
 if len(sys.argv) >= 2:
     start_file = sys.argv[1]  # The name of the start file, e.g., 'gtrsaw07a_233.wav'
 else:
-    print("Place file to be wvtbl'd in \"./source\" folder.\nUsage: python wvtbl.py <start_file>.wav")
+    print("Usage: python wvtbl.py <start_file>.wav")
     sys.exit(1)
 
 # Function to create a folder if it doesn't exist
@@ -33,8 +32,7 @@ def create_folder(folder_name):
 source_folder = "source"
 # print(f"DEBUG: source_folder: {source_folder}")
 start_file= os.path.join(source_folder, start_file)  # Using the first argument for the start file name
-print(f"File to be processed: {start_file}\n")
-# print("\n⌄⌄⌄⌄⌄⌄⌄⌄⌄⌄IGNORE ANY WARNINGS⌄⌄⌄⌄⌄⌄⌄⌄⌄⌄") 
+print(f"File to be processed: {start_file}")
 # Check if the start file exists within the source folder
 if not os.path.exists(start_file):
     print(f"'{start_file}' does not exist in the source folder. Please ensure the file is there and try again.")
@@ -64,7 +62,7 @@ tmp_folder = os.path.join(base, 'tmp')
 os.makedirs(tmp_folder, exist_ok=True)
 
 # Filter out the specific warning...this is not working.  
-warnings.filterwarnings("ignore", message="Chunk (non-data) not understood, skipping it.")
+# warnings.filterwarnings("ignore", message="Chunk (non-data) not understood, skipping it.")
 
 # Declare amplitude_tolerance_db as a global variable
 amplitude_tolerance_db = -60
@@ -189,6 +187,7 @@ def prompt_for_start_frame(highest_frame):
         except ValueError:
             print("Invalid input. Please enter a valid number.")
 
+
 # block 2
 
 # pitch detection functions
@@ -206,6 +205,22 @@ def test_crepe(base_prep_192k32b_path):
     sr, audio = wavfile.read(base_prep_192k32b_path)
     time, frequency, confidence, activation = crepe.predict(base_prep_192k32b_data, sr, viterbi=True) 
     return frequency, confidence  # Returns frequency and confidence of prediction
+
+def frequency_to_note(frequency, A4=440):
+    """
+    Maps a given frequency to the nearest equal temperament note.
+    A4 is set to 440 Hz by default.
+    """
+    if frequency <= 0:
+        return None
+    # Calculate the number of half steps away from A4
+    half_steps = 12 * np.log2(frequency / A4)
+    # Round to the nearest half step to get the equal temperament note
+    nearest_half_step = int(round(half_steps))
+    # Convert back to frequency
+    nearest_frequency = A4 * 2 ** (nearest_half_step / 12)
+    return nearest_frequency
+
 
 def combine_and_save_frames(start_frame, frame_count):
     combined_frames = []
@@ -246,121 +261,12 @@ def perform_backfill_and_invert():
     sf.write(backfill_file_path, combined_frame, sr, subtype='FLOAT')
     print(f"Backfilled combined file created at {backfill_file_path}")
 
-def frequency_to_note(frequency, A4=440):
-    """
-    Maps a given frequency to the nearest equal temperament note.
-    A4 is set to 440 Hz by default.
-    """
-    if frequency <= 0:
-        return None
-    # Calculate the number of half steps away from A4
-    half_steps = 12 * np.log2(frequency / A4)
-    # Round to the nearest half step to get the equal temperament note
-    nearest_half_step = int(round(half_steps))
-    # Convert back to frequency
-    nearest_frequency = A4 * 2 ** (nearest_half_step / 12)
-    return nearest_frequency
-
-def note_to_frequency(note):
-    """
-    Convert a musical note to its corresponding frequency.
-    Assumes A4 = 440Hz as standard tuning.
-    """
-    A4 = 440
-    notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-    
-    octave = int(note[-1])  # Extract the octave number
-    note_name = note[:-1]  # Extract the note name (without octave)
-    
-    if note_name in notes:
-        # Calculate the note's index in the octave from C0 up to the note
-        note_index = notes.index(note_name) - notes.index('A') + (octave - 4) * 12
-        # Calculate the frequency
-        return A4 * (2 ** (note_index / 12))
-    else:
-        print("\n\33[33mInvalid note name.\33[0m")
-        return None
-
-def frequency_to_note_and_cents(frequency, A4=440):
-    notes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
-    c0 = A4 * pow(2, -4.75)
-    half_steps_above_c0 = round(12 * log2(frequency / c0))
-    note = notes[half_steps_above_c0 % 12]
-    octave = half_steps_above_c0 // 12
-    exact_frequency = c0 * pow(2, half_steps_above_c0 / 12)
-    cents = round(1200 * log2(frequency / exact_frequency))
-    return f"{note}{octave}", cents
-
-def cents_difference(freq1, freq2):
-    # Calculate the difference in cents between two frequencies
-    return 1200 * log2(freq2 / freq1)
-
-def find_nearest_harmonic(freq_est, mode_frequency):
-    """
-    Find the nearest multiple or submultiple of mode_frequency to freq_est.
-    """
-    # Calculate the ratio of freq_est to mode_frequency
-    ratio = freq_est / mode_frequency
-    
-    # Find the nearest whole number to the ratio
-    nearest_whole_number_ratio = round(ratio)
-    
-    # Calculate the adjusted frequency based on this ratio
-    adjusted_freq = mode_frequency * nearest_whole_number_ratio
-    
-    return adjusted_freq, nearest_whole_number_ratio
-
-
-# set freq est
-# Initialize freq_est to 0 by default to handle cases where no frequency is provided
-freq_est = None
-note_est = None
-cents = 0  # Initialize cents to avoid referencing before assignment
-lowest_freq = 20
-highest_freq = 880
-
-while True:
-    # Prompt the user for frequency or note
-    freq_note_input = input(f"     Enter the frequency in Hz (between {lowest_freq}Hz and {highest_freq}Hz), \n     Or note (no flats) with octave \n     (e.g., A3, A#3, B3, C4, C#4, D4, D#4, E4, F4, F#4, G4, G#4), \n     or press <enter> to proceed without setting it.\n\033[36mHz, Note, or <enter>: \033[0m").strip()
-
-    if not freq_note_input:
-        print("\nProceeding without known frequency or note.")
-        break  # Exit the loop if the user presses Enter without input
-
-    if freq_note_input.replace('.', '', 1).isdigit():
-        # Input is treated as a frequency
-        freq_est = float(freq_note_input)
-        if lowest_freq <= freq_est <= highest_freq:
-            break  # Valid frequency; exit the loop
-        else:
-            print(f"\n\033[33mThe frequency {freq_est}Hz is out of bounds. \nValid Frequencies are {lowest_freq} to {highest_freq}\033[0m")
-            freq_est = 0  # Reset and repeat the prompt
-    else:
-        # Input is treated as a note, convert to frequency
-        freq_est = note_to_frequency(freq_note_input)
-        if freq_est and lowest_freq <= freq_est <= highest_freq:
-            note_est = freq_note_input
-            break  # Valid note; exit the loop
-        else:
-            print(f"\n\033[33mThe note '{freq_note_input}' is out of bounds. \nUPPERCASE letters required for notes. \nValid Notes: F0 through A5.\nOctaves increment at C, not A.\033[0m")
-            freq_est = 0  # Reset and repeat the prompt
-
-# Flag to indicate whether freq_est was manually set by the user
-freq_est_manually_set = freq_est is not None
-
-# If a valid frequency was entered, you can proceed with further processing
-if freq_est:
-    note_est, cents = frequency_to_note_and_cents(freq_est)
-    cents_format = f"+{cents}" if cents > 0 else f"{cents}"
-    note_est_cents = f"{note_est} {cents_format}"
-    print(f"\nFrequency entered: {freq_est}Hz")
-    print(f"Corresponding note and deviation: {note_est_cents} cents\n")
 
 # block 3
 
 # begin upsample section
-print("\nUpsampling source and adding fade in and out ...")
-# print("\n⌄⌄⌄⌄⌄⌄⌄⌄⌄⌄IGNORE ANY WARNINGS⌄⌄⌄⌄⌄⌄⌄⌄⌄⌄") 
+print("\nUpsampling source and fading in and out ...")
+
 # Load the waveform and sample rate from the input file
 sample_rate, bit_depth = wavfile.read(start_file)
 
@@ -404,11 +310,11 @@ interpolated_input_192k32b[-fade_samples:] *= fade_window[::-1]
 
 # Save the faded audio to a new file
 wavfile.write("faded_output.wav", 192000, interpolated_input_192k32b)
-print(f"\n\nSource file upsampled to {base_prep_192k32b}")
+print(f"Source file upsampled to {base_prep_192k32b_path}")
 
 
 # upsample ends here...begin pitch section
-print(f"\nAI Pitch detect {base_prep_192k32b}\n")# Pitch finding using crepe neural net
+print(f"\nAI Pitch detect {base_prep_192k32b_path}\n")# Pitch finding using crepe neural net
 
 # Pitch finding using crepe neural net
 
@@ -416,9 +322,8 @@ print("⌄⌄⌄⌄⌄⌄⌄⌄⌄⌄IGNORE THESE WARNINGS⌄⌄⌄⌄⌄⌄⌄�
 frequency_test, confidence_test = test_crepe(base_prep_192k32b_path)
 
 # Define the tolerance range
-lower_bound_crepe = lowest_freq  # Adjust this lower bound as needed
-upper_bound_crepe = highest_freq  # Adjust this upper bound as needed
-# print(f"DEBUG: Crepe lowest: {lower_bound_crepe}Hz, Crepe Highest: {upper_bound_crepe}")
+lower_bound_crepe = 20  # Adjust this lower bound as needed
+upper_bound_crepe = 880  # Adjust this upper bound as needed
 
 # Filter frames that meet the criterion within the specified range
 filtered_frames_crepe = frequency_test[(frequency_test >= lower_bound_crepe) & (frequency_test <= upper_bound_crepe)]
@@ -455,26 +360,10 @@ print("⌃⌃⌃⌃⌃⌃⌃⌃⌃⌃END OF JUNK TO IGNORE⌃⌃⌃⌃⌃⌃⌃�
 print("\nCREPE neural net pitch detection results:")
 
 if mode_frequency is not None:
-    print(f"Mode Frequency: {mode_frequency} Hz")
-    print(f"Confidence for Mode Frequency: {round(mode_confidence_avg * 100)}%")
+    print(f"Mode Frequency: {mode_frequency} Hz (within -49 to +50 cents range)")
+    print(f"mode Confidence for Mode Frequency: {round(mode_confidence_avg * 100)}%")
 else:
     print("No mode frequency found within the specified range.")
-print("\n\nTESTING\n")
-
-if not freq_est_manually_set:
-    freq_est = mode_frequency
-    print(f"freq_est was not provided; setting freq_est to mode frequency: {freq_est} Hz")
-
-# Find the nearest harmonic match and update mode_frequency
-adjusted_freq, nearest_ratio = find_nearest_harmonic(freq_est, mode_frequency)
-
-# Update mode_frequency with the adjusted frequency
-if adjusted_freq != mode_frequency:
-    mode_frequency = adjusted_freq
-    print(f"Updated mode frequency to the nearest harmonic: {mode_frequency} Hz, using a ratio of {nearest_ratio}.")
-else:
-    print("Mode frequency is already at or near the nearest harmonic.")
-print("\n\nEND TESTING\n")
 
 # --- "pitch" section ends here ---
 
@@ -585,8 +474,7 @@ print(f"{segment_index -2} segments  in temporary folder.")
 print("Sorting and labeling segments...")
 
 # check for short wavecycles
-plus_minus_tolerance_percent = 5
-plus_minus_tolerance_percent = int(input("How far can single cycles deviate from the target length? \nPercentage: ").strip())
+plus_minus_tolerance_percent = 50
 plus_minus_tolerance = plus_minus_tolerance_percent / 100
 # Initialize a variable to track if any pairs qualify
 any_qualify = False
@@ -678,9 +566,6 @@ if len(first_three_indices) == 3:
 else:
     print("Did not find three consecutive segments within the tolerance range.")
 
-# Initialize a list to keep track of files that fall outside the tolerance range
-outside_tolerance_files = []
-
 # Loop through all the segments that weren't previously renamed to '_atk'
 for i in range(len(segment_sizes)):
     # Skip the segments that were already renamed to '_atk' or outside tolerance range
@@ -702,20 +587,14 @@ for i in range(len(segment_sizes)):
         dev_name = f"{base}_seg_{i:04d}_dev{ext}"
         dev_path = os.path.join(tmp_folder, dev_name)
 
-        # Rename the file and track the file name for printing later
+        # Rename the file and print the deviation information
         if os.path.exists(tmp_file_path):
             os.rename(tmp_file_path, dev_path)
-            outside_tolerance_files.append(dev_name)  # Keep track of deviant files
+            # print(f"DEBUG: {dev_name} deviates {deviation_percent:.2f}%")
 
-# Print the count and names of files outside the tolerance range
-if outside_tolerance_files:
-    print(f"Count of files outside the tolerance range: {len(outside_tolerance_files)}")
-    # print("DEBUG:Files outside the tolerance range:")
-    # for file in outside_tolerance_files:
-        # print(f"- {file}")
-else:
+# After checking all segments, report if no files were outside the tolerance range
+if not any_outside_tolerance_renamed:
     print("No segment files fall outside the tolerance range.")
-
 
 # block 7
 # ---INTERPOLATION ---
@@ -984,9 +863,9 @@ os.makedirs(serum_wavetable_folder, exist_ok=True)
 # Define and create the subfolder within 'pwr2' named 'wt192'
 # pwr2_192_2048 = os.path.join(single_cycles_folder, pwr2_192_2048)
 os.makedirs(pwr2_192_2048, exist_ok=True)
-# print(f"DEBUG: pwr2_192_2048 set to: {pwr2_192_2048}")
-# print(f"DEBUG: Source 192 waveforms folder set to: {single_cycles_192k32b}")
-# print(f"DEBUG: Resampled waveforms folder set to: {pwr2_192_2048}")
+print(f"DEBUG: pwr2_192_2048 set to: {pwr2_192_2048}")
+print(f"DEBUG: Source 192 waveforms folder set to: {single_cycles_192k32b}")
+print(f"DEBUG: Resampled waveforms folder set to: {pwr2_192_2048}")
 
 # Calculate the ratio of the 2048 to wavecycle_samples_target_192
 pwr_of_2_wt192_ratio = target_wt192_length / wavecycle_samples_target_192
