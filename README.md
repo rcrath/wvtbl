@@ -79,3 +79,9 @@ Enjoy!
 Rich Rath
 Way Music / https://way.net/music plz give it a listen!
 2024
+
+### use in serum and other wavetable synths
+
+In Serum, click the edit wavetable pencil, and in the middle menu, choose import, audio (fixed frame).
+
+For other wavetable synths, RTM for import.  You have a 2048samplex256frame wavetable.
