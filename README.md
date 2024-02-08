@@ -4,6 +4,9 @@
 This is a script to process short mono sound file into a set of serum compatible wavetables, one at the rate of 93.75 hz, which will create 256 frames of 2048 sample single cycle serum wavetables, and a secod file that creates variant number of integer multiples or submultiples to give the same 256 frame 2048 sample at a pitch as close to the input pitchj as possible.  These files are all date/time stamped so that they will always have unique filenamnes if you want to try different settings.the 93.75 HZ wavetables are named with the input file name + "_94Hz_ + datetime.wav in a folder of the same name as the source file."  
 
 ## Running wvtble
+
+### Install python 3.11, which includes pip. other versions will not work.  instructions vary by OS
+
 ### using your own input files
 A few source files are included for testing.  To add your own input file, copy the file to the "source" folder where the script is. the script works most accurately with single not inout files, but experimentation is the order of the day.  If you have a tuner of some sort, it helps to know the frequncy of the note.  You can get this from Audacity: load your input file into audacity, select the file segment, got to `Effect', `pitch and tempo`, change pitch and it will show you the estimated pitch on the left near the top. For a more precise reading, go to the `analysis` dropdown, `Paul Brossier`, `Aubio Pitch detect:` that will give you a dense series of pitch estimates. guess which is the most common!
 
