@@ -1,4 +1,3 @@
-
 # block 1 
 import os
 import sys
@@ -9,6 +8,8 @@ import re
 import shutil
 import resampy
 import subprocess
+import math
+from math import log2, isclose
 import numpy as np
 import soundfile as sf
 from scipy.io import wavfile
@@ -16,29 +17,60 @@ from scipy import stats
 from pydub import AudioSegment
 from scipy.interpolate import interp1d
 import warnings
-from math import log2, isclose
+from datetime import datetime
 
-# Check if the correct number of command-line arguments are provided
-if len(sys.argv) >= 2:
-    start_file = sys.argv[1]  # The name of the start file, e.g., 'gtrsaw07a_233.wav'
-else:
-    print("Place file to be wvtbl'd in \"./source\" folder.\nUsage: python wvtbl.py <start_file>.wav")
-    sys.exit(1)
-
-# Function to create a folder if it doesn't exist
-def create_folder(folder_name):
-    os.makedirs(folder_name, exist_ok=True)
-
-# Define the source folder and construct the full path to the start file
+# Define the source folder
 source_folder = "source"
-# print(f"DEBUG: source_folder: {source_folder}")
-start_file= os.path.join(source_folder, start_file)  # Using the first argument for the start file name
-print(f"File to be processed: {start_file}\n")
-# print("\n⌄⌄⌄⌄⌄⌄⌄⌄⌄⌄IGNORE ANY WARNINGS⌄⌄⌄⌄⌄⌄⌄⌄⌄⌄") 
-# Check if the start file exists within the source folder
+
+# Function to list .wav files and allow user selection
+def list_and_select_wav_files(source_folder):
+    # List all wav files in the source_folder
+    files = [f for f in os.listdir(source_folder) if f.endswith('.wav')]
+
+    # Sort files alphabetically
+    files.sort()
+    
+    # Display files to the user with an index
+    for i, file in enumerate(files):
+        print(f"{i+1}: {file}")
+    
+    # Optionally, add an option to quit the script at the end of the file list
+    print("\nEnter the number of the file to select, or type 'q' to exit.")
+
+    # Get user input and handle selection or quit
+    selection = input("Selection: ").strip()
+    if selection.lower() == 'q':
+        print("Quitting script.")
+        sys.exit()  # Exit the script entirely
+    
+    try:
+        # Convert the user's input into an index and retrieve the corresponding file name
+        selected_index = int(selection) - 1  # Adjust for zero-based indexing
+        if 0 <= selected_index < len(files):
+            return files[selected_index]  # Return the selected file name
+        else:
+            print("Invalid selection. Please try again.")
+            return list_and_select_wav_files(source_folder)  # Recursive call to retry
+    except ValueError:
+        print("Please enter a valid number or 'q'.")
+        return list_and_select_wav_files(source_folder)  # Recursive call to retry
+
+# Decide how to select the start file based on the presence of command-line arguments
+if len(sys.argv) >= 2:
+    start_file_name = sys.argv[1]  # Use the command-line argument if provided
+else:
+    # Call the function to list and let the user select a wav file if no command-line argument is given
+    start_file_name = list_and_select_wav_files(source_folder)
+
+# Construct full path to the start file
+start_file = os.path.join(source_folder, start_file_name)
+
+# Ensure the file exists
 if not os.path.exists(start_file):
-    print(f"'{start_file}' does not exist in the source folder. Please ensure the file is there and try again.")
+    print(f"'{start_file}' does not exist. Please check the file name and try again.")
     sys.exit(1)
+
+print(f"Processing file: {start_file}")
 
 # Load the waveform and sample rate from the input file
 sample_rate, start_file_data = wavfile.read(start_file)
@@ -76,15 +108,9 @@ os.makedirs(single_cycles_folder, exist_ok=True)
 single_cycles_192k32b = os.path.join(single_cycles_folder, '192k32b')
 os.makedirs(single_cycles_192k32b, exist_ok=True)
 
-pwr2_192_2048 = os.path.join(single_cycles_folder, 'pwr2_192_2048')
-os.makedirs(pwr2_192_2048, exist_ok=True)
-
 # Define and create the output folder for the 256 frame combined files for Serum wavetables
-serum_wavetable_folder = os.path.join(base, 'serum_wavetable')
-os.makedirs(serum_wavetable_folder, exist_ok=True)
-
-# serum_2048x256 = os.path.join(serum_wavetable_folder, 'serum_2048x256')
-# os.makedirs(serum_2048x256, exist_ok=True)
+concat_folder = os.path.join(base, 'concat')
+os.makedirs(concat_folder, exist_ok=True)
 
 base_prep_192k32b_path = os.path.join(tmp_folder, base_prep_192k32b)
 # print(f"{base_prep_192k32b_path}")
@@ -128,6 +154,43 @@ def is_full_wavecycle(segment):
         return False
 
     return True
+
+def split_and_save_wav_with_correct_padding(file_path, output_folder, base_name, wavetable_type, num_full_files):
+    data, sr = sf.read(file_path) 
+    segment_length = len(data)
+    num_frames_per_file = 2048 * 256  # Serum-compatible wavetable size
+
+    # Calculate the number of full wavetable files that can be created
+    num_full_files = segment_length // num_frames_per_file
+
+    # Process each full file
+    for i in range(num_full_files):
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        start_sample = i * num_frames_per_file
+        end_sample = start_sample + num_frames_per_file
+        segment = data[start_sample:end_sample]
+        output_file_name = f"{base_name}_{wavetable_type}_{timestamp}.wav"
+        output_file_path = os.path.join(output_folder, output_file_name)
+        sf.write(output_file_path, segment, sr)  # Use `sr` to maintain original sample rate
+        
+        print(f"Saved '{output_file_name}' with {len(segment)} samples")
+
+    # Handle the last segment if there's a remainder, ensuring it also becomes 524288 samples long
+    remainder = segment_length % num_frames_per_file
+    if remainder > 0:
+        padding_needed = num_frames_per_file - remainder
+        if num_full_files > 0:
+            padding_start = (num_full_files - 1) * num_frames_per_file + (num_frames_per_file - padding_needed)
+            padding_samples = data[padding_start:padding_start + padding_needed]
+            last_segment = np.concatenate([padding_samples, data[-remainder:]])
+        else:
+            last_segment = np.concatenate([data[:padding_needed], data[-remainder:]])
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        output_file_name = f"{base_name}_{wavetable_type}_{timestamp}.wav"
+        output_file_path = os.path.join(output_folder, output_file_name)
+        sf.write(output_file_path, last_segment, sr)  # Again, use `sr` for sample rate
+        print(f"Saved '{output_file_name}' with {len(last_segment)} samples")
+
 
 # function to upsample or downsample files.
 def interpolate_best(waveform, original_sr, target_sr):
@@ -179,7 +242,7 @@ def is_file_silent(start_file):
 
 def prompt_for_start_frame(highest_frame):
     while True:
-        start_frame_input = input(f"Enter the starting frame (1 to {highest_frame}): ")
+        start_frame_input = input(f"Enter the starting frame (1 [default] to {highest_frame}): ") or '1'
         try:
             start_frame = int(start_frame_input)
             if 1 <= start_frame <= highest_frame:
@@ -188,6 +251,48 @@ def prompt_for_start_frame(highest_frame):
                 print(f"Please enter a number within the range 1 to {highest_frame}.")
         except ValueError:
             print("Invalid input. Please enter a valid number.")
+
+def calculate_cycles_per_frame(cycle_length, frame_length=2048):
+    """
+    Calculate the number of cycles that can fit into a frame of a given length.
+
+    Parameters:
+    - cycle_length: Length of a single cycle in samples.
+    - frame_length: Length of the frame in samples (default is 2048 for Serum wavetable).
+
+    Returns:
+    - int: Number of whole cycles that can fit into the frame.
+    """
+    if cycle_length == 0:
+        return 0
+    
+    cycles_fit = frame_length // cycle_length
+    remaining_space = frame_length % cycle_length
+
+    # If adding one more cycle makes the total length closer to the frame length, do so
+    if remaining_space > 0 and (cycle_length - remaining_space) < remaining_space:
+        cycles_fit += 1
+
+    return cycles_fit
+
+
+def adjust_sample_rate_based_on_wavecycle_length(input_file_path, target_length, output_folder):
+    data, original_sr = sf.read(input_file_path)
+    target_sr = original_sr  # Default to original sample rate
+
+    # Adjust the sample rate based on the target wavecycle length
+    if 3072 < target_length < 6145:
+        target_sr = 96000
+    elif 6148 < target_length < 9600:
+        target_sr = 48000
+
+    # Resample the audio if the target sample rate differs from the original
+    if target_sr != original_sr:
+        data_resampled = resampy.resample(data, original_sr, target_sr)
+        new_filename = f"{os.path.splitext(os.path.basename(input_file_path))[0]}_{target_sr}.wav"
+        output_file_path = os.path.join(output_folder, new_filename)
+        sf.write(output_file_path, data_resampled, target_sr)
+        # print(f"Resampled {os.path.basename(input_file_path)} to {target_sr}Hz, saved as {new_filename}.")
 
 # block 2
 
@@ -207,6 +312,31 @@ def test_crepe(base_prep_192k32b_path):
     time, frequency, confidence, activation = crepe.predict(base_prep_192k32b_data, sr, viterbi=True) 
     return frequency, confidence  # Returns frequency and confidence of prediction
 
+def mark_attack_segments(first_qualifying_idx, base, tmp_folder, ext):
+    any_attack_phase_renamed = False
+    for i in range(first_qualifying_idx):
+        seg_name = f"{base}_seg_{i:04d}{ext}"
+        seg_file_path = os.path.join(tmp_folder, seg_name)
+        atk_name = f"{base}_seg_{i:04d}_atk{ext}"
+        atk_path = os.path.join(tmp_folder, atk_name)
+        if os.path.exists(seg_file_path):
+            os.rename(seg_file_path, atk_path)
+            any_attack_phase_renamed = True
+    return any_attack_phase_renamed
+
+def mark_deviant_segments(segment_sizes, lower_bound, upper_bound, wavecycle_samples_target_192, base, tmp_folder, ext):
+    outside_tolerance_files = []
+    for i, segment_size in enumerate(segment_sizes):
+        if segment_size < lower_bound or segment_size > upper_bound:
+            seg_name = f"{base}_seg_{i:04d}{ext}"
+            seg_file_path = os.path.join(tmp_folder, seg_name)
+            dev_name = f"{base}_seg_{i:04d}_dev{ext}"
+            dev_path = os.path.join(tmp_folder, dev_name)
+            if os.path.exists(seg_file_path):
+                os.rename(seg_file_path, dev_path)
+                outside_tolerance_files.append(dev_name)
+    return outside_tolerance_files
+
 def combine_and_save_frames(start_frame, frame_count):
     combined_frames = []
     ending_frame = start_frame + frame_count - 1
@@ -219,7 +349,7 @@ def combine_and_save_frames(start_frame, frame_count):
 
     combined_frame = np.concatenate(combined_frames, axis=0)
     combined_2048x256_file_name = f"{base}_2048x256_start{start_frame:04d}_{frame_count}_frame{ext}"
-    combined_2048x256_frame_out_path = os.path.join(serum_wavetable_folder, combined_2048x256_file_name)
+    combined_2048x256_frame_out_path = os.path.join(concat_folder, combined_2048x256_file_name)
     sf.write(combined_2048x256_frame_out_path, combined_frame, sr, subtype='FLOAT')
     print(f"Combined {frame_count} frames starting from frame {start_frame} saved as: {combined_2048x256_frame_out_path}")
 
@@ -291,9 +421,79 @@ def frequency_to_note_and_cents(frequency, A4=440):
     cents = round(1200 * log2(frequency / exact_frequency))
     return f"{note}{octave}", cents
 
+def get_manual_frequency_input(lowest_freq, highest_freq):
+    """
+    Prompt for a frequency in Hz or a musical note. Returns the frequency in Hz,
+    or None if the user decides to skip by pressing Enter.
+    """
+    while True:
+        user_input = input(f"Enter the frequency in Hz (between {lowest_freq}Hz and {highest_freq}Hz), a musical note (e.g., A4, C#3), or press Enter to skip: ").strip()
+
+        if not user_input:  # User presses Enter to skip
+            return None
+
+        if user_input.replace('.', '', 1).isdigit():  # Input is in Hz
+            freq = float(user_input)
+            if lowest_freq <= freq <= highest_freq:
+                return freq
+            else:
+                print(f"Frequency out of bounds. Please enter a value between {lowest_freq}Hz and {highest_freq}Hz.")
+        else:  # Input is potentially a note
+            freq = note_to_frequency(user_input)
+            if freq and lowest_freq <= freq <= highest_freq:
+                return freq
+            elif not freq:
+                print(f"Invalid note. Please enter a valid musical note (e.g., A4, C#3).")
+            else:
+                print(f"Note frequency out of bounds. Please enter a note corresponding to a frequency between {lowest_freq}Hz and {highest_freq}Hz.")
+def calculate_pitch_shift_factor(mode_frequency, target_pitch, sr):
+    return 12 * np.log2(target_pitch / mode_frequency)
+def find_nearest_harmonic(freq_est, mode_frequency):
+    """
+    Find the nearest multiple or submultiple of mode_frequency to freq_est.
+    """
+    # Calculate the ratio of freq_est to mode_frequency
+    ratio = freq_est / mode_frequency
+    
+    # Find the nearest whole number to the ratio
+    nearest_whole_number_ratio = round(ratio)
+    
+    # Calculate the adjusted frequency based on this ratio
+    adjusted_freq = mode_frequency * nearest_whole_number_ratio
+    
+    return adjusted_freq, nearest_whole_number_ratio
+
+def calculate_pitch_at_sample_rate(original_pitch, original_sr, new_sr):
+    return original_pitch * (new_sr / original_sr)
+
+def calculate_pitch_at_sample_rate(original_pitch, original_sr, new_sr):
+    return original_pitch * (new_sr / original_sr)
+
+# Function to find the closest multiple of 93.75 Hz to the original pitch
+def closest_multiple_of_9375(original_pitch):
+    multiple = round(original_pitch / 93.75)
+    return multiple * 93.75
+
 def cents_difference(freq1, freq2):
     # Calculate the difference in cents between two frequencies
     return 1200 * log2(freq2 / freq1)
+
+def get_manual_frequency_input(lowest_freq, highest_freq):
+    while True:
+        freq_note_input = input(f"Enter the frequency in Hz (between {lowest_freq}Hz and {highest_freq}Hz), or press <enter> to proceed without setting it.\nHz: ").strip()
+
+        if not freq_note_input:
+            return None  # User chose to skip manual input
+
+        if freq_note_input.replace('.', '', 1).isdigit():
+            freq_est = float(freq_note_input)
+            if lowest_freq <= freq_est <= highest_freq:
+                return freq_est  # Valid frequency; exit the loop
+            else:
+                print(f"The frequency {freq_est}Hz is out of bounds. Valid Frequencies are {lowest_freq} to {highest_freq}")
+        else:
+            print("Invalid input. Please enter a valid frequency in Hz.")
+
 
 def find_nearest_harmonic(freq_est, mode_frequency):
     """
@@ -310,71 +510,141 @@ def find_nearest_harmonic(freq_est, mode_frequency):
     
     return adjusted_freq, nearest_whole_number_ratio
 
+def initialize_settings():
+    # Initial settings with default values
+    settings = {
+        'freq_note_input': 'enter',  # Default action is to proceed without setting
+        'percent_tolerance': 5,  # Default tolerance percent
+        'discard_atk_choice': 'N',  # Default choice for discarding attack segments
+        'discard_dev_choice': 'N',  # Default choice for discarding deviant segments
+        'discard_good_choice': 'N',  # Default choice for discarding good segments
+        'cleanup_choice': 'Y',  # Default choice for cleanup
 
-# set freq est
-# Initialize freq_est to 0 by default to handle cases where no frequency is provided
-freq_est = None
-note_est = None
-cents = 0  # Initialize cents to avoid referencing before assignment
+    }
+    return settings
+
+def update_settings(settings):
+    accept_defaults = input("\n\n    Accept all defaults? (Y/n, default=Y): ").strip().upper() or 'Y'
+    if accept_defaults == 'Y':
+        print("Proceeding with defaults.\n\n\n")
+        return settings
+
+    # Update settings only if not accepting defaults
+    settings['freq_note_input'] = input(f"     Enter the frequency in Hz (between {lowest_freq}Hz and {highest_freq}Hz), \n     Or note (no flats) with octave \n     (e.g., A3, A#3, B3, C4, C#4, D4, D#4, E4, F4, F#4, G4, G#4), \n     or press <enter> to proceed without setting it.\n\033[36mHz, Note, or <enter>: \033[0m").strip() or 'enter'
+    
+    # Update the tolerance setting based on user input
+    percent_input = input(f"Set deviation tolerance from target length (default={settings['percent_tolerance']}%): ").strip()
+    if percent_input:
+        try:
+            # Ensure the input is converted to float for percentage calculation later
+            settings['percent_tolerance'] = float(percent_input)
+            print(f"Tolerance updated to {settings['percent_tolerance']}%.")
+        except ValueError:
+            print("Invalid input. Proceeding with default deviation tolerance.")
+
+    settings['discard_atk_choice'] = input("Discard attack segments? (y/N, default=N): ").strip().upper() or 'N'
+    settings['discard_dev_choice'] = input("Discard deviant segments? (y/N, default=N): ").strip().upper() or 'N'
+    settings['discard_good_choice'] = input("Discard good segments? (y/N, default=N): ").strip().upper() or 'N'
+    settings['cleanup_choice'] = input("Perform cleanup? (Y/n, default=Y): ").strip().upper() or 'Y'
+    
+    return settings
+def is_segment_deviant(index, base, tmp_folder, ext):
+    """
+    Check if the given segment index corresponds to a deviant segment.
+    
+    Parameters:
+    - index: The index of the segment to check.
+    - base: The base name for the files.
+    - tmp_folder: The temporary folder where the segments are stored.
+    - ext: The file extension of the segments.
+    
+    Returns:
+    - True if the segment is tagged as deviant, False otherwise.
+    """
+    # Construct the expected filename for a deviant segment
+    deviant_file_name = f"{base}_seg_{index:04d}_dev{ext}"
+    deviant_file_path = os.path.join(tmp_folder, deviant_file_name)
+    
+    # Return True if the deviant file exists, False otherwise
+    return os.path.exists(deviant_file_path)
+
+
+
+# Main script starts here
 lowest_freq = 20
 highest_freq = 880
 
-while True:
-    # Prompt the user for frequency or note
-    freq_note_input = input(f"     Enter the frequency in Hz (between {lowest_freq}Hz and {highest_freq}Hz), \n     Or note (no flats) with octave \n     (e.g., A3, A#3, B3, C4, C#4, D4, D#4, E4, F4, F#4, G4, G#4), \n     or press <enter> to proceed without setting it.\n\033[36mHz, Note, or <enter>: \033[0m").strip()
+settings = initialize_settings()  # Initialize with defaults
+settings = update_settings(settings)  # Optionally update settings
 
-    if not freq_note_input:
-        print("\nProceeding without known frequency or note.")
-        break  # Exit the loop if the user presses Enter without input
+# Initialize a variable at the script's start to track if the tolerance was manually set
+tolerance_manually_set = False
 
-    if freq_note_input.replace('.', '', 1).isdigit():
-        # Input is treated as a frequency
-        freq_est = float(freq_note_input)
-        if lowest_freq <= freq_est <= highest_freq:
-            break  # Valid frequency; exit the loop
-        else:
-            print(f"\n\033[33mThe frequency {freq_est}Hz is out of bounds. \nValid Frequencies are {lowest_freq} to {highest_freq}\033[0m")
-            freq_est = 0  # Reset and repeat the prompt
+if settings.get('accept_defaults', 'Y').lower() != 'y':
+    # This block is where you've determined that the user does not want to accept all defaults
+    # Now, prompt for the tolerance percentage as part of the initial setup
+    user_input = input(f"Enter deviation tolerance percentage (default={settings['percent_tolerance']}%): ").strip()
+    if user_input:
+        try:
+            settings['percent_tolerance'] = float(user_input)
+            tolerance_manually_set = True  # Mark that the tolerance was manually set
+        except ValueError:
+            print("Invalid input. Using default deviation tolerance.")
+else:
+    # If accepting all defaults, there's no need to change 'tolerance_manually_set' as it remains False
+    print("Proceeding with all defaults, including the default deviation tolerance.")
+
+# Now, `settings` contains the final values to use
+# print(settings)  # Demonstration of settings; replace with actual use in your script
+
+
+# Initialize freq_est to 0 by default to handle cases where no frequency is provided
+# Assuming settings have been initialized and updated as needed
+freq_est = None
+freq_est_manually_set = False
+
+# Check if frequency/note input is part of the settings and act accordingly
+if settings.get('freq_note_input') and settings['freq_note_input'] != 'enter':
+    freq_input = settings['freq_note_input']
+    if freq_input.replace('.', '', 1).isdigit():
+        freq_est = float(freq_input)
     else:
-        # Input is treated as a note, convert to frequency
-        freq_est = note_to_frequency(freq_note_input)
-        if freq_est and lowest_freq <= freq_est <= highest_freq:
-            note_est = freq_note_input
-            break  # Valid note; exit the loop
-        else:
-            print(f"\n\033[33mThe note '{freq_note_input}' is out of bounds. \nUPPERCASE letters required for notes. \nValid Notes: F0 through A5.\nOctaves increment at C, not A.\033[0m")
-            freq_est = 0  # Reset and repeat the prompt
-
-# Flag to indicate whether freq_est was manually set by the user
-freq_est_manually_set = freq_est is not None
+        freq_est = note_to_frequency(freq_input)  # Assuming note_to_frequency is defined and available
+    if freq_est:
+        freq_est_manually_set = True
+else:
+    # Optionally call get_manual_frequency_input() here if you want to prompt for input even when settings don't specify a frequency
+    pass
 
 # If a valid frequency was entered, you can proceed with further processing
 if freq_est:
-    note_est, cents = frequency_to_note_and_cents(freq_est)
+    note_est, cents = frequency_to_note_and_cents(freq_est)  # Ensure you have this function defined
     cents_format = f"+{cents}" if cents > 0 else f"{cents}"
     note_est_cents = f"{note_est} {cents_format}"
     print(f"\nFrequency entered: {freq_est}Hz")
     print(f"Corresponding note and deviation: {note_est_cents} cents\n")
 
-# block 3
+
+ # block 3a
 
 # begin upsample section
-print("\nUpsampling source and adding fade in and out ...")
+# print("\nUpsampling source and adding fade in and out ...")
 # print("\n⌄⌄⌄⌄⌄⌄⌄⌄⌄⌄IGNORE ANY WARNINGS⌄⌄⌄⌄⌄⌄⌄⌄⌄⌄") 
 # Load the waveform and sample rate from the input file
 sample_rate, bit_depth = wavfile.read(start_file)
 
 
 y, sr = librosa.load(start_file, sr=None)  # Load the file with its original sample rate
-# print(f"DEBUG: base_prep_192k32b_path_file: {base_prep_192k32b_path_file}")
+# print(f"DEBUG: base_prep_192k32b_path: {base_prep_192k32b_path}")
 
 
 # Calculate the duration of the input waveform in seconds
-duration_seconds = len(start_file) / sample_rate
+duration_seconds = librosa.get_duration(y=y, sr=sr)
+# print(f"DEBUG: duration_seconds: {duration_seconds}, \n       len(y): {len(y)}")
 
 # Calculate the number of samples needed to interpolate to 192k while keeping the same duration
 target_samples_192k = round(192000 * duration_seconds)
-
+# print(f"DEBUG: target_samples_192k: {target_samples_192k}")
 # Resample the input waveform to 192k samples using the best interpolation method
 interpolated_input_192k32b = interpolate_best(start_file_data, sample_rate, 192000)
 # print(f"DEBUG: base_prep_192k32b: {base_prep_192k32b}")
@@ -386,48 +656,56 @@ wavfile.write(os.path.join(tmp_folder, base_prep_192k32b), 192000, interpolated_
 
 # set variables for reading files
 base_prep_192k32b_data, sr = librosa.load(os.path.join(tmp_folder, base_prep_192k32b), sr=None)
-base_prep_192k32b_data_path = os.path.join(tmp_folder, base_prep_192k32b)
+base_prep_192k32b_path = os.path.join(tmp_folder, base_prep_192k32b)
 # print(f"base_prep_192k32b_data: {base_prep_192k32b_data}")
-# print(f"DEBUG: base_prep_192k32b_data_path: {base_prep_192k32b_data_path}")
+# print(f"DEBUG: base_prep_192k32b_path: {base_prep_192k32b_path}")
 
 # print(f"DEBUG: path: {tmp_folder}/{base_prep_192k32b}")
-# print(f"DEBUG: base_prep_192k32b_data: {base_prep_192k32b_data}")
+# print(f"DEBUG: base_prep_192k32b_path: {base_prep_192k32b_path}")
 
+sample_rate = 192000 
 
-# Add a 5-millisecond fade in and fade out
-fade_samples = int(0.001 * 192000)  # 1 milliseconds at 192k samples/second
-fade_window = np.linspace(0, 1, fade_samples)
+# Define the number of samples for fade in and fade out
+fade_samples = 2048  # Adjust this as needed
 
-interpolated_input_192k32b = interpolated_input_192k32b.astype(np.float32)
-interpolated_input_192k32b[:fade_samples] *= fade_window
-interpolated_input_192k32b[-fade_samples:] *= fade_window[::-1]
+# Ensure the audio data is long enough for the fades
+if len(base_prep_192k32b_data) > 2 * fade_samples:
+    # Create the fade-in and fade-out windows
+    fade_in_window = np.linspace(0, 1, fade_samples, dtype=np.float32)
+    fade_out_window = np.linspace(1, 0, fade_samples, dtype=np.float32)
 
-# Save the faded audio to a new file
-wavfile.write("faded_output.wav", 192000, interpolated_input_192k32b)
-print(f"\n\nSource file upsampled to {base_prep_192k32b}")
+    # Apply the fade in to the beginning of the audio data
+    base_prep_192k32b_data[:fade_samples] *= fade_in_window
 
+    # Apply the fade out to the end of the audio data
+    base_prep_192k32b_data[-fade_samples:] *= fade_out_window
+else:
+    print("Audio data too short for the specified fade length.")
 
-# upsample ends here...begin pitch section
-print(f"\nAI Pitch detect {base_prep_192k32b}\n")# Pitch finding using crepe neural net
+# Save the audio data with fades applied back to a new file, maintaining the 32-bit float format
+# output_path = os.path.join(tmp_folder, base_prep_192k32b)  # Adjust as needed to save in the desired location
+sf.write(base_prep_192k32b_path, base_prep_192k32b_data, sample_rate, subtype='FLOAT')
+
+# print(f"Audio saved with fades applied to {base_prep_192k32b_path}")
+# print(f"sample_rate: {sample_rate}")
+
+# block 3b
+# begin pitch section
+
+# print(f"\nAI Pitch detect {base_prep_192k32b}\n")# Pitch finding using crepe neural net
 
 # Pitch finding using crepe neural net
 
 print("⌄⌄⌄⌄⌄⌄⌄⌄⌄⌄IGNORE THESE WARNINGS⌄⌄⌄⌄⌄⌄⌄⌄⌄⌄")  
 frequency_test, confidence_test = test_crepe(base_prep_192k32b_path)
 
+# Output the results
+print("⌃⌃⌃⌃⌃⌃⌃⌃⌃⌃END OF JUNK TO IGNORE⌃⌃⌃⌃⌃⌃⌃⌃⌃⌃\n\n\n")
+
+
 # Define the tolerance range
 lower_bound_crepe = lowest_freq  # Adjust this lower bound as needed
 upper_bound_crepe = highest_freq  # Adjust this upper bound as needed
-# print(f"DEBUG: Crepe lowest: {lower_bound_crepe}Hz, Crepe Highest: {upper_bound_crepe}")
-
-# Filter frames that meet the criterion within the specified range
-filtered_frames_crepe = frequency_test[(frequency_test >= lower_bound_crepe) & (frequency_test <= upper_bound_crepe)]
-
-# Calculate the mode frequency and confidence of the filtered frames
-mode_frequency_crepe = np.mean(filtered_frames_crepe)
-mode_confidence_crepe = np.mean(confidence_test[(frequency_test >= lower_bound_crepe) & (frequency_test <= upper_bound_crepe)])
-mode_frequency_crepe_int = round(mode_frequency_crepe)
-mode_confidence_crepe_int = round(mode_confidence_crepe * 100)
 
 # Prepare frequencies for mode calculation
 filtered_frequencies = [frequency for frequency in frequency_test if lower_bound_crepe <= frequency <= upper_bound_crepe]
@@ -450,44 +728,64 @@ else:
     mode_frequency = None
     mode_confidence_avg = 0
 
-# Output the results
-print("⌃⌃⌃⌃⌃⌃⌃⌃⌃⌃END OF JUNK TO IGNORE⌃⌃⌃⌃⌃⌃⌃⌃⌃⌃\n")
-print("\nCREPE neural net pitch detection results:")
+confidence_threshold = 0.50
 
+# Assume mode_frequency and mode_confidence_avg have been determined as before
+
+if freq_est_manually_set:
+    # If a manual frequency was previously set, offer a choice between it and the detected mode frequency
+    print(f"Detected mode frequency: {mode_frequency} Hz with confidence {round(mode_confidence_avg * 100)}%.")
+    choice_prompt = f"Choose frequency source: \n1. Detected mode ({mode_frequency} Hz), \n2. Manually entered ({freq_est} Hz) \n[default: 1]: "
+    user_choice = input(choice_prompt).strip()
+
+    if user_choice == '2':
+        # User chooses the manually entered frequency
+        mode_frequency = freq_est
+        print(f"Using manually entered frequency: {freq_est} Hz.")
+    else:
+        # User chooses the detected mode frequency or does not provide valid input; no change needed
+        print(f"Proceeding with detected mode frequency: {mode_frequency} Hz.")
+elif mode_confidence_avg < confidence_threshold:
+    # If no manual frequency was set and confidence is low, prompt for manual frequency input
+    print("Pitch detection results are not reliable.")
+    freq_est = get_manual_frequency_input(lowest_freq, highest_freq)
+    if freq_est is not None:
+        # User chooses to manually set the frequency
+        mode_frequency = freq_est
+        freq_est_manually_set = True
+        print(f"Using manually entered frequency: {freq_est} Hz.")
+    else:
+        print("No manual frequency input provided. Unable to proceed.")
+else:
+    # If confidence is high and no manual frequency was previously set, proceed with detected mode frequency
+    print(f"Proceeding with high-confidence mode frequency: {mode_frequency} Hz.")
+
+# Ensure wavecycle_samples_target_192 is calculated and valid
+wavecycle_samples_target_192 = round(192000 / mode_frequency) if mode_frequency else None
+
+if not wavecycle_samples_target_192 or wavecycle_samples_target_192 <= 0:
+    print("Unable to proceed without a valid target wave cycle sample count.")
+    sys.exit(1)
+
+# Display final decision on frequency use
+print("\nFinal frequency decision:")
 if mode_frequency is not None:
-    print(f"Mode Frequency: {mode_frequency} Hz")
-    print(f"Confidence for Mode Frequency: {round(mode_confidence_avg * 100)}%")
+    print(f"Final Mode Frequency: {mode_frequency} Hz.")
 else:
-    print("No mode frequency found within the specified range.")
-print("\n\nTESTING\n")
-
-if not freq_est_manually_set:
-    freq_est = mode_frequency
-    print(f"freq_est was not provided; setting freq_est to mode frequency: {freq_est} Hz")
-
-# Find the nearest harmonic match and update mode_frequency
-adjusted_freq, nearest_ratio = find_nearest_harmonic(freq_est, mode_frequency)
-
-# Update mode_frequency with the adjusted frequency
-if adjusted_freq != mode_frequency:
-    mode_frequency = adjusted_freq
-    print(f"Updated mode frequency to the nearest harmonic: {mode_frequency} Hz, using a ratio of {nearest_ratio}.")
-else:
-    print("Mode frequency is already at or near the nearest harmonic.")
-print("\n\nEND TESTING\n")
+    print("No mode frequency determined; unable to proceed.")
 
 # --- "pitch" section ends here ---
 
 
 # block 4
 # --- begin "segmentation" section ---
-print("\nSegmentation underway...")
+# print("\nSegmentation underway...")
 
 segment_sizes = []  # Initialize the list to hold segment sizes
 prev_start_index = 0  # Start from the beginning
 some_small_amplitude = 10**(amplitude_tolerance_db / 20)  # Convert to linear scale
-base_prep_192k32b_path_file = os.path.join(tmp_folder, base_prep_192k32b)
-samplerate, data = wavfile.read(base_prep_192k32b_path_file)
+base_prep_192k32b_path = os.path.join(tmp_folder, base_prep_192k32b)
+data, samplerate = sf.read(base_prep_192k32b_path)
 
 # Process the first segment explicitly if the start is near zero
 if abs(data[0]) < some_small_amplitude:  # Define 'some_small_amplitude' based on your fades
@@ -536,8 +834,8 @@ for i in range(1, len(data)):
                     #  print(f"Debug: Segment {segment_index} written: {tmp_base_seg_path}")
 
                 segment_index += 1
-            else:
-                print(f"Warning: Empty wave cycle detected at index {i}")
+            # else:
+                # print(f"Warning: Empty wave cycle detected at index {i}")
 
 # Check if the first two segments contain full wave cycles
 if first_segment is not None and second_segment is not None:
@@ -572,161 +870,129 @@ if first_segment is not None and second_segment is not None:
 # Handle the last segment
 if prev_start_index < len(data):
     wave_cycle = data[prev_start_index:]
-    wavfile.write(tmp_base_seg_path, samplerate, wave_cycle)
-    #  print(f"Debug: Final segment {segment_index} written: {tmp_base_seg_path}")
-    segment_index += 1
+    # Check if the wave cycle is full before writing to file
+    if is_full_wavecycle(wave_cycle):
+        wavfile.write(tmp_base_seg_path, samplerate, wave_cycle)
+        # print(f"Debug: Final segment {segment_index} written: {tmp_base_seg_path}")
+        segment_index += 1
+    # else:
+        # print(f"Debug: Final segment {segment_index} is not a full wave cycle and was not written.")
 
-print(f"{segment_index -2} segments  in temporary folder.")
+# Block 5 - Handling Tolerance and Identifying Qualifying Segments
+# Block 5: Handling Tolerance and Identifying Attack Phase
 
+# Assign tolerance from settings and calculate as decimal
+plus_minus_tolerance_percentage = settings['percent_tolerance']
+plus_minus_tolerance = plus_minus_tolerance_percentage / 100.0
 
-# block 5
+# Check and set wavecycle target based on mode_frequency
+if mode_frequency and mode_frequency > 0:
+    wavecycle_samples_target_192 = round(192000 / mode_frequency)
+else:
+    print("Mode frequency not determined. Unable to define wavecycle target.")
+    sys.exit(1)  # Exit if mode frequency is undefined
 
-# --- begin "sort and label segments" ---
-print("Sorting and labeling segments...")
-
-# check for short wavecycles
-plus_minus_tolerance_percent = 5
-plus_minus_tolerance_percent = int(input("How far can single cycles deviate from the target length? \nPercentage: ").strip())
-plus_minus_tolerance = plus_minus_tolerance_percent / 100
-# Initialize a variable to track if any pairs qualify
-any_qualify = False
-
-# Initialize wavecycle_samples_target_192 with a default or null value
-wavecycle_samples_target_192 = None  # Or some default value if appropriate
-
-
-try:
-    
-
-    # Check if mode_frequency_crepe_int is non-zero before using it to update wavecycle_samples_target to wavecycle_samples_target_192
-    if mode_frequency_crepe_int != 0:
-        wavecycle_samples_target_192 = round(192000 / mode_frequency_crepe_int)
-        print(f"Target wave cycle samples (wavecycle_samples_target_192): {wavecycle_samples_target_192}")
-    else:
-        print("Warning: Crepe pitch is zero or undetermined. Unable to create wavecycle_samples_target_192.")
-except Exception as e:
-    mode_frequency_crepe_int = 0
-    print(f"Error: {e}")
-
-# Calculate the upper and lower bounds for the number of samples
+# Recalculate bounds with updated tolerance
 lower_bound = wavecycle_samples_target_192 * (1 - plus_minus_tolerance)
 upper_bound = wavecycle_samples_target_192 * (1 + plus_minus_tolerance)
 
-# Initialize a variable to keep track of how many consecutive segments are within the tolerance
-consecutive_count = 0
+print(f"Using +/- tolerance: {plus_minus_tolerance_percentage}%, Lower Bound: {lower_bound}, Upper Bound: {upper_bound}")
 
-# Initialize variables to store the indices of the first three qualifying segments
-first_three_indices = []
-# Initialize the list to store the starting sample index for each segment
-segment_start_indices = [0]
+# Initialize list for storing non-deviant segment indices
+non_deviant_segments = []
 
-# Calculate the cumulative sum of segment sizes to get the starting index for each segment
-for size in segment_sizes:
-    segment_start_indices.append(segment_start_indices[-1] + size)
-
-# Remove the last entry because it's beyond the last segment
-segment_start_indices.pop()
-
-
-# Iterate through the segment sizes
+# Identify non-deviant segments within tolerance
 for idx, size in enumerate(segment_sizes):
-    if lower_bound <= size <= upper_bound:
-        consecutive_count += 1
-        first_three_indices.append(idx)
-        
-        # Check if you've found three consecutive segments
-        if consecutive_count == 3:
-            break
-    else:
-        # Reset if a segment is outside the tolerance
-        consecutive_count = 0
-        first_three_indices = []
+    if lower_bound <= size <= upper_bound and not is_segment_deviant(idx, base, tmp_folder, ext):
+        non_deviant_segments.append(idx)
 
-# Check if three consecutive qualifying segments were found
-if len(first_three_indices) == 3:
-    first_qualifying_idx = first_three_indices[0]
+# Find first set of three consecutive non-deviant segments
+first_set_start_index = None
+for i in range(len(non_deviant_segments) - 2):
+    if non_deviant_segments[i] + 1 == non_deviant_segments[i + 1] and non_deviant_segments[i + 1] + 1 == non_deviant_segments[i + 2]:
+        first_set_start_index = non_deviant_segments[i]
+        print(f"First three consecutive non-deviant segments start at index: {first_set_start_index}")
+        break
 
-    # Calculate the sample number before the first good segment
-    if first_qualifying_idx > 0:
-        last_sample_before_good = segment_start_indices[first_qualifying_idx] - 1
-        print(f"First three consecutive qualifying segments are at indices: {first_three_indices}")
-    else:
-        last_sample_before_good = 0  # If the first segment is good, then it starts at the beginning
-
+# Rename preceding segments as attack phase, if applicable
+if first_set_start_index is not None:
+    for i in range(first_set_start_index):
+        seg_name = f"{base}_seg_{i:04d}{ext}"
+        seg_file_path = os.path.join(tmp_folder, seg_name)
+        atk_name = f"{base}_seg_{i:04d}_atk{ext}"
+        atk_path = os.path.join(tmp_folder, atk_name)
+        if os.path.exists(seg_file_path):
+            os.rename(seg_file_path, atk_path)
+    print("Attack phase segments marked.")
 else:
-    print("Did not find three consecutive segments within the tolerance range.")
+    print("No consecutive non-deviant segments for attack phase marking.")
 
-# block 6
-# Rename remaining files outside the tolerance range
-print("Renaming remaining files outside the tolerance range...")
+# block 6 rename atk and dev, count
+
+# Rename attack phase files and remaining files outside the tolerance range
+# print("Renaming attack phase and remaining files outside the tolerance range...")
 
 # Initialize variables
-first_qualifying_idx = None
+first_qualifying_idx = None  # Use None to indicate that no qualifying index has been found yet
 any_outside_tolerance_renamed = False
+any_attack_phase_renamed = False
 
-# Check if any qualifying segments were found earlier in the script
-if len(first_three_indices) == 3:
+
+
+# Initialize first_three_indices as an empty list
+first_three_indices = []
+
+# Below is where you prompt for user input or use defaults
+if settings.get('accept_defaults', 'Y').lower() != 'y':
+    user_input = input(f"How far can single cycles deviate from the target length? (default={percent_tolerance}%) \nPercentage: ").strip()
+    if user_input:
+        try:
+            plus_minus_tolerance_percentage = float(user_input)
+            plus_minus_tolerance = plus_minus_tolerance_percentage / 100.0
+        except ValueError:
+            print("Invalid input. Using default deviation tolerance.")
+            plus_minus_tolerance = plus_minus_tolerance_percentage / 100.0
+else:
+    plus_minus_tolerance = plus_minus_tolerance_percentage / 100.0
+
+# Recalculate the lower and upper bounds here
+if wavecycle_samples_target_192:
+    lower_bound = wavecycle_samples_target_192 * (1 - plus_minus_tolerance)
+    upper_bound = wavecycle_samples_target_192 * (1 + plus_minus_tolerance)
+else:
+    print("Wavecycle target not set, cannot proceed.")
+    # Here, handle the case appropriately, such as exiting or setting a default
+
+
+if len(first_three_indices) >= 3:
     first_qualifying_idx = first_three_indices[0]
+    any_attack_phase_renamed = mark_attack_segments(first_qualifying_idx, base, tmp_folder, ext)
+    print("Attack phase files renamed." if any_attack_phase_renamed else "No attack phase files to rename.")
 
-    # Calculate the sample number before the first good segment
-    if first_qualifying_idx > 0:
-        last_sample_before_good = segment_start_indices[first_qualifying_idx] - 1
-    else:
-        last_sample_before_good = 0  # If the first segment is good, then it starts at the beginning
+# Now handle deviant segments based on tolerance
+outside_tolerance_files = mark_deviant_segments(segment_sizes, lower_bound, upper_bound, wavecycle_samples_target_192, base, tmp_folder, ext)
+print(f"Count of files outside the tolerance range: {len(outside_tolerance_files)}" if outside_tolerance_files else "No segment files fall outside the tolerance range.")
 
-    print(f"Length of attack phase: {last_sample_before_good} samples")
-else:
-    print("Did not find three consecutive segments within the tolerance range.")
 
-# Initialize a list to keep track of files that fall outside the tolerance range
-outside_tolerance_files = []
-
-# Loop through all the segments that weren't previously renamed to '_atk'
-for i in range(len(segment_sizes)):
-    # Skip the segments that were already renamed to '_atk' or outside tolerance range
-    if first_qualifying_idx is not None and (i < first_qualifying_idx or i in first_three_indices):
-        continue
-
-    # Check if the segment is outside the tolerance
-    if segment_sizes[i] < lower_bound or segment_sizes[i] > upper_bound:
-        any_outside_tolerance_renamed = True
-
-        # Calculate percent deviation from the target
-        deviation_percent = ((segment_sizes[i] - wavecycle_samples_target_192) / wavecycle_samples_target_192) * 100
-
-        # Construct the original segment name and path
-        tmp_name = f"{base}_seg_{i:04d}{ext}"
-        tmp_file_path = os.path.join(tmp_folder, tmp_name)
-
-        # Construct the new name and path with a label indicating it's deviant
-        dev_name = f"{base}_seg_{i:04d}_dev{ext}"
-        dev_path = os.path.join(tmp_folder, dev_name)
-
-        # Rename the file and track the file name for printing later
-        if os.path.exists(tmp_file_path):
-            os.rename(tmp_file_path, dev_path)
-            outside_tolerance_files.append(dev_name)  # Keep track of deviant files
-
-# Print the count and names of files outside the tolerance range
-if outside_tolerance_files:
-    print(f"Count of files outside the tolerance range: {len(outside_tolerance_files)}")
-    # print("DEBUG:Files outside the tolerance range:")
-    # for file in outside_tolerance_files:
-        # print(f"- {file}")
-else:
-    print("No segment files fall outside the tolerance range.")
 
 
 # block 7
 # ---INTERPOLATION ---
 print("\nInterpolating...")
+
 # Initialize the list to store interpolation ratios
 interpolation_ratios = []
+
+# Create a new subfolder '192k32b_singles' within 'tmp_folder'
+singles_folder = os.path.join(tmp_folder, '192k32b_singles')
+os.makedirs(singles_folder, exist_ok=True)
 
 # Calculate interpolation ratios for each segment
 for segment_size in segment_sizes:
     ratio = wavecycle_samples_target_192 / segment_size
-    interpolation_ratios.append(ratio)# Iterate through all files in the tmp folder
+    interpolation_ratios.append(ratio)
+
+# Iterate through all files in the tmp folder
 interpolated_segments = []  # List to retain all the interpolated segments
 for file in os.listdir(tmp_folder):
     # Check if the file name follows the expected pattern
@@ -738,22 +1004,16 @@ for file in os.listdir(tmp_folder):
 
         # Ensure the extracted segment index is all digits
         if segment_idx_str.isdigit():
-            tmp_file_path = os.path.join(tmp_folder, file)
+            seg_file_path = os.path.join(tmp_folder, file)
 
             # Read the original segment and get its sample rate and subtype
-            data, samplerate = sf.read(tmp_file_path)
-            info = sf.info(tmp_file_path)
+            data, samplerate = sf.read(seg_file_path)
+            info = sf.info(seg_file_path)
 
             # Determine the correct subtype for writing based on the subtype of the original file
+            write_subtype = 'FLOAT'  # Default to FLOAT for compatibility
             if info.subtype in ['PCM_16', 'PCM_24', 'PCM_32']:
                 write_subtype = info.subtype
-            elif info.subtype == 'FLOAT':
-                write_subtype = 'FLOAT'
-            elif info.subtype == 'DOUBLE':
-                write_subtype = 'FLOAT'
-            else:
-                print(f"Unsupported subtype: {info.subtype} for file {file}")
-                continue  # Skip this file and proceed to the next one
 
             segment_idx = int(segment_idx_str)
             if segment_idx >= len(interpolation_ratios):
@@ -761,99 +1021,76 @@ for file in os.listdir(tmp_folder):
                 continue  # Skip this file and proceed to the next one
 
             # Use the corresponding interpolation ratio to calculate the target length
-            wavecycle_samples_target_192 = int(round(interpolation_ratios[segment_idx] * len(data)))
+            target_length = int(round(interpolation_ratios[segment_idx] * len(data)))
 
             # Apply interpolation to adjust the segment length to the target length
-            interpolated_segment = interpolate_seg(data, samplerate, wavecycle_samples_target_192)
+            interpolated_segment = interpolate_seg(data, samplerate, target_length)
 
             # Append the interpolated segment to the list to retain it
             interpolated_segments.append(interpolated_segment)
 
-            # Construct the new file name using the captured parts and save in wavetables folder
+            # Construct the new file name using the captured parts
             single_cycles_192k32b_name = f"{base}_seg_{segment_idx_str}{suffix}.wav"
-            single_cycles_192k32b_path = os.path.join(single_cycles_192k32b, single_cycles_192k32b_name)
+            single_cycles_192k32b_path = os.path.join(singles_folder, single_cycles_192k32b_name)
     
-            # Write the interpolated segment to a new file
+            # Write the interpolated segment to the '192k32b_singles' folder
             sf.write(single_cycles_192k32b_path, interpolated_segment, samplerate, subtype=write_subtype)
 
-        else:
-            print(f"Invalid segment index in filename: {file}")
+        # else:
+            # print(f"Invalid segment index in filename: {file}")
+    # else:
+        # print("\nChecking Lengths...")
 
-    else:
-        # print(f"DEBUG: File does not match pattern: {file}")
-        print("\nChecking Lengths...")
 
-# block 8
 
-# Initialize a list to keep track of files with incorrect lengths and a counter
-incorrect_files = []
-incorrect_lengths = 0  # Initialize the counter for files with incorrect lengths
 
-# Checking lengths of all segments in the wavetables folder...
-for file in os.listdir(single_cycles_192k32b):
+# No longer directly prompt the user in block 8, but use the choices from 'settings'
+discard_atk_choice = settings['discard_atk_choice']
+discard_dev_choice = settings['discard_dev_choice']
+discard_good_choice = settings['discard_good_choice']
+
+# Iterate through all files in the '192k32b_singles' folder
+for file in os.listdir(singles_folder):
     if file.endswith(".wav"):
         # Construct the full path to the file
-        file_path = os.path.join(single_cycles_192k32b, file)
+        file_path = os.path.join(singles_folder, file)
+
+        # Check if file is an '_atk', '_dev', or 'good' file and handle according to user's choice
+        if '_atk' in file and discard_atk_choice == 'Y':
+            print("Discarding attack files")
+            os.remove(file_path)  # Make sure to actually delete/discarding the file if needed
+            continue  # Skip to the next file
+        elif '_dev' in file and discard_dev_choice == 'Y':
+            print("Discarding deviant files")
+            os.remove(file_path)  # Make sure to actually delete/discarding the file if needed
+            continue  # Skip to the next file
+        elif not ('_atk' in file or '_dev' in file) and discard_good_choice == 'Y':
+            print("Discarding 'good' files")
+            os.remove(file_path)  # Make sure to actually delete/discarding the file if needed
+            continue  # Skip to the next file
+
+        # If the file is not discarded based on the user's choices:
+        # Read the original file
+        data, samplerate = sf.read(file_path)
+        original_length = len(data)
+
+        # Interpolate the data to the correct length if necessary
+        correct_length_data = interpolate_seg(data, samplerate, wavecycle_samples_target_192)
+
+        # Construct the path for saving to 'single_cycles_192k32b'
+        all_same_length__path = os.path.join(single_cycles_192k32b, file)
         
-        # Read the file to get its data
-        data, _ = sf.read(file_path)
-        
-        # Check if the length of the data matches the target
-        if len(data) != wavecycle_samples_target_192:
-            # print(f"Debug: File {file} has incorrect length: {len(data)} samples (expected {wavecycle_samples_target_192})")
-            incorrect_lengths += 1
-            incorrect_files.append(file)  # Add the file name to the list
+        # Write the interpolated data to the 'single_cycles_192k32b' folder
+        sf.write(all_same_length__path, correct_length_data, samplerate, subtype='FLOAT')
+        # Optionally print a message indicating the file has been processed and saved
 
-# Print a summary of the test results
-total_files_in_single_cycles_192k32b = len([f for f in os.listdir(single_cycles_192k32b) if f.endswith('.wav')])
-correct_lengths = total_files_in_single_cycles_192k32b - incorrect_lengths
-
-print(f"\nPost-Interpolation Length Check Summary:")
-print(f"Total files checked in wavetables folder: {total_files_in_single_cycles_192k32b}")
-print(f"Files with correct length: {correct_lengths}")
-
-if incorrect_lengths == 0:
-    print("Success: Every file in the wavetables folder is precisely the expected length.")
-else:
-    print(f"{incorrect_lengths} of {total_files_in_single_cycles_192k32b} files not equal to target length.")
-    for incorrect_file in incorrect_files:
-        print(incorrect_file)
-
-# Code to handle files with incorrect lengths
-for file in incorrect_files:
-    # Construct the full path to the file
-    file_path = os.path.join(single_cycles_192k32b, file)
-    
-    # Read the original file
-    data, samplerate = sf.read(file_path)
-    original_length = len(data)
-    
-    # Calculate the new ratio for this specific file based on its length
-    new_ratio = wavecycle_samples_target_192 / original_length
-    
-    # print(f"DEBUG: Processing {file}: Original length: {original_length}, Target length: {wavecycle_samples_target_192}, Ratio: {new_ratio}")
-    
-    # Interpolate the data to the correct length
-    correct_length_data = interpolate_seg(data, samplerate, wavecycle_samples_target_192)
-    
-    # print(f"DEBUG: Corrected length: {len(correct_length_data)} (Expected: {wavecycle_samples_target_192})")
-
-    # Determine the subtype for writing
-    info = sf.info(file_path)
-    write_subtype = 'FLOAT' if info.subtype not in ['FLOAT', 'DOUBLE'] else info.subtype
-    
-    # Write the interpolated data back to the original file name
-    sf.write(file_path, correct_length_data, samplerate, subtype=write_subtype)
-    # print(f"DEBUG: Wrote corrected data to {file_path}")
+# print(f"Processed files according to user preferences and saved to 'single_cycles_192k32b'")
 
 # block 9
 # --- powers of two ---
-print(f"\nChanging single cycles to nearest power of 2 number of samples..")
+# print(f"--- BEGIN POWERS OF 2 ---")
 
 nearest_192_higher_pwr2 = int(2**np.ceil(np.log2(wavecycle_samples_target_192)))
-
-# serum_pwr2_any = os.path.join(serum_wavetable_folder, f'192k_pwr2_{int(nearest_192_higher_pwr2)}')
-# os.makedirs(serum_pwr2_any, exist_ok=True)
 
 # Define the single cycle folder named '192' to save the interpolated segments in
 subfolder_192_name = "192"
@@ -863,8 +1100,8 @@ single_cycles_pwr2_any = os.path.join(single_cycles_folder, f'192k_pwr2_{nearest
 if not os.path.exists(single_cycles_pwr2_any):
     os.makedirs(single_cycles_pwr2_any)
 
-# print(f"DEBUG: Source 192 waveforms folder set to: {single_cycles_192k32b}")
-# print(f"DEBUG: Resampled waveforms folder set to: {single_cycles_pwr2_any}")
+# print(f"Source 192 waveforms folder set to: {single_cycles_192k32b}")
+# print(f"Resampled waveforms folder set to: {single_cycles_pwr2_any}")
 
 # Define the ratio of the nearest higher power of 2 to wavecycle_samples_target_192
 pwr_of_2_192_ratio = nearest_192_higher_pwr2 / wavecycle_samples_target_192
@@ -890,243 +1127,174 @@ for filename in os.listdir(single_cycles_192k32b):
         sf.write(pwr2_192_file_path, interpolated_data, original_sr, subtype='FLOAT')
         # print(f"Processed and saved: {filename} to {single_cycles_pwr2_any}")
 
-# block 10
-# --- Combining Specified Number of Wavecycles into a Single File ---
-print("\nCombining single cycles to 256 frames ---")
+# Block 9.1 - Transforming to Fixed Length of 2048 Samples
+# print("\nTransforming to fixed length of 2048 samples...")
 
-# Use the `single_cycles_192k32b` directory to determine the count for total_files_in_single_cycles_192k32b
-total_files_in_single_cycles_192k32b = len([f for f in os.listdir(single_cycles_192k32b) if f.endswith(ext)])
+# Define the target length
+target_length_2048 = 2048
 
-# Specify the number of frames to combine
-frames_to_combine_wt = 256  # Adjust this value as needed
+# Define and create the pwr2_192_2048 directory
+pwr2_192_2048 = os.path.join(single_cycles_folder, 'pwr2_192_2048_94hz')
+if not os.path.exists(pwr2_192_2048):
+    os.makedirs(pwr2_192_2048)
+    # print(f"Created directory: {pwr2_192_2048}")
+# else:
+    # print(f"Directory already exists: {pwr2_192_2048}")
 
-# Ensure there are enough frames available
-if total_files_in_single_cycles_192k32b >= frames_to_combine_wt:
-    highest_start_frame_wt = total_files_in_single_cycles_192k32b - frames_to_combine_wt + 1
+# Process files from single_cycles_pwr2_any
+for filename in os.listdir(single_cycles_pwr2_any):
+    if filename.endswith('.wav'):
+        input_file_path = os.path.join(single_cycles_pwr2_any, filename)
+        data, original_sr = sf.read(input_file_path)
+        interpolated_data = interpolate_seg(data, original_sr, target_length_2048)
+        output_file_path = os.path.join(pwr2_192_2048, filename)
+        sf.write(output_file_path, interpolated_data, original_sr, subtype='FLOAT')
+        # print(f"Processed and saved: {filename} to {output_file_path}")
 
-    # Prompt the user for the starting frame within the valid range, if more than one choice is available
-    if highest_start_frame_wt > 1:
-        while True:
-            start_frame_wt_input = input(f"Enter the starting frame (1 to {highest_start_frame_wt}): ")
-            try:
-                start_frame_wt = int(start_frame_wt_input)
-                if 1 <= start_frame_wt <= highest_start_frame_wt:
-                    break
-                else:
-                    print(f"Please enter a number within the range 1 to {highest_start_frame_wt}.")
-            except ValueError:
-                print("Invalid input. Please enter a valid number.")
-    else:
-        start_frame_wt = 1  # Default to the first frame if only one choice is available
+# print("Finished processing files for {pwr2_192_2048}.")
 
-    # Continue with combining frames...
-    combined_wt_frames = []
-    for filename in sorted(os.listdir(single_cycles_192k32b))[start_frame_wt - 1:start_frame_wt - 1 + frames_to_combine_wt]:
-        if filename.endswith(ext):
-            file_path = os.path.join(single_cycles_192k32b, filename)
-            waveform, sr = sf.read(file_path)
-            combined_wt_frames.append(waveform)
 
-    combined_wt_frame = np.concatenate(combined_wt_frames, axis=0)
-    combined_wt_frame_out = f"{base}_wt_{start_frame_wt:04d}_{frames_to_combine_wt}_frame_orig_pitch{ext}"
-    combined_wt_frame_out_path = os.path.join(serum_wavetable_folder, combined_wt_frame_out)
-    sf.write(combined_wt_frame_out_path, combined_wt_frame, sr, subtype='FLOAT')
-    print(f"Combined {frames_to_combine_wt} frames starting from frame {start_frame_wt} saved as: {combined_wt_frame_out_path}")
+# block 9.2 Adjusting Sample Rate for Low Sample Lengths
 
-else:
-    # Not enough frames to proceed with user input, use backfill method
-    print("Not enough frames to complete forward fill. Performing forward-backward fill...")
-    # Calculate the number of frames to fill backward
-    backward_fill_count = frames_to_combine - total_files_in_single_cycles_192k32b
+output_folder_for_adjusted_samples = (single_cycles_pwr2_any) # Define your output folder path here
 
-    # Initialize the list for the combined frames
-    combined_frames = []
+# Ensure the output folder exists
+if not os.path.exists(output_folder_for_adjusted_samples):
+    os.makedirs(output_folder_for_adjusted_samples)
 
-    # Forward fill with available frames
-    for filename in sorted(os.listdir(single_cycles_192k32b))[:total_files_in_single_cycles_192k32b]:
-        if filename.endswith(ext):
-            file_path = os.path.join(single_cycles_192k32b, filename)
-            waveform, sr = sf.read(file_path)
-            combined_frames.append(waveform)
+for filename in os.listdir(single_cycles_pwr2_any):
+    if filename.endswith('.wav'):
+        input_file_path = os.path.join(single_cycles_pwr2_any, filename)
+        # Call the function with wavecycle_samples_target_192 as the target_length
+        # Here, you can directly pass wavecycle_samples_target_192 if it's a fixed value for all files,
+        # or calculate it based on the content of each file if necessary
+        adjust_sample_rate_based_on_wavecycle_length(input_file_path, wavecycle_samples_target_192, output_folder_for_adjusted_samples)
 
-    # Backward and inverted fill for the remainder
-    for filename in sorted(os.listdir(single_cycles_192k32b))[-backward_fill_count:]:
-        if filename.endswith(ext):
-            file_path = os.path.join(single_cycles_192k32b, filename)
-            waveform, sr = sf.read(file_path)
-            inverted_waveform = -np.flip(waveform)
-            combined_frames.append(inverted_waveform)
+output_folder = output_folder_for_adjusted_samples
 
-    # Concatenate all frames along the first axis (time axis)
-    combined_frame = np.concatenate(combined_frames, axis=0)
+# Flag to track if any file with specific endings exists
+five_digit_ending_exists = False
 
-    # Define the output file name
-    backfill_file_name = f"{base}_combined_backfilled_{frames_to_combine}_frames{ext}"
+# First, check if there are any files with the specific endings
+for filename in os.listdir(output_folder):
+    if re.search(r'_(48000|96000)\.wav$', filename):
+        five_digit_ending_exists = True
+        print("\nAdjusting Sample Rate for Low Sample Lengths...")
+        break  # Break the loop if at least one matching file is found
 
-    # Construct the full path for the output file
-    backfill_file_path = os.path.join(serum_wavetable_folder, backfill_file_name)
+# If files with specific endings exist, proceed to check and delete files without those endings
+if five_digit_ending_exists:
+    for filename in os.listdir(output_folder):
+        if filename.endswith('.wav') and not re.search(r'_(48000|96000)\.wav$', filename):
+            # Delete files that do not end with '48000.wav' or '96000.wav'
+            os.remove(os.path.join(output_folder, filename))
+            
 
-    # Write the combined frames to the output file
-    sf.write(backfill_file_path, combined_frame, sr, subtype='FLOAT')
+# print("Sample rate adjustment and cleanup completed.")
+        
+# print("Sample rate adjustment completed.")
 
-    print(f"Backfilled combined file created at {backfill_file_path}")
+# block 10 concatenate
+
+# Concatenate ALL files in single_cycles_pwr2_any
+all_frames_pwr2 = []
+for filename in sorted(os.listdir(single_cycles_pwr2_any)):
+    if filename.endswith('.wav'):
+        file_path = os.path.join(single_cycles_pwr2_any, filename)
+        data, sr = sf.read(file_path)
+        all_frames_pwr2.append(data)
+
+# Concatenate all frames into a single array
+wavetable_data_pwr2 = np.concatenate(all_frames_pwr2, axis=0)
+
+# Save the concatenated wavetable
+output_file_pwr2 = f"{base}_closest_pwr2_all.wav"
+output_path_pwr2 = os.path.join(concat_folder, output_file_pwr2)
+sf.write(output_path_pwr2, wavetable_data_pwr2, sr, subtype='FLOAT')
+# print(f"Saved processed files to '{output_file_pwr2} at {sr}Hz'")
+
+# Concatenate ALL files in pwr2_192_2048
+all_frames_2048 = []
+for filename in sorted(os.listdir(pwr2_192_2048)):
+    if filename.endswith('.wav'):
+        file_path = os.path.join(pwr2_192_2048, filename)
+        data, sr = sf.read(file_path)
+        all_frames_2048.append(data)
+
+# Concatenate all frames into a single array
+wavetable_data_2048 = np.concatenate(all_frames_2048, axis=0)
+
+# Save the concatenated wavetable
+output_file_2048 = f"{base}_2048_94Hz_all.wav"
+output_path_2048 = os.path.join(concat_folder, output_file_2048)
+sf.write(output_path_2048, wavetable_data_2048, sr, subtype='FLOAT')
+# print(f"Saved processed files to '{output_file_2048}'")
+
+# Assuming {base}_closest_pwr2_all.wav and {base}_2048_94Hz_all.wav are located in concat_folder
+closest_pwr2_all_path = os.path.join(concat_folder, f"{base}_closest_pwr2_all.wav")
+hz_94_all_path = os.path.join(concat_folder, f"{base}_2048_94Hz_all.wav")
 
 # block 11
-print("\nCreating standard 2048x256 Serum Wavetable...")
+# make wavetables and cleanup
 
-# Define the subfolders for original and resampled waveforms
-target_wt192_length = 2048  # Serum standard wt target length for all files
+closest_pitch_folder = base
+hz_94_folder = base
 
-# Define and create the output folder for resampled waveforms
-# serum_wavetable_folder = os.path.join(serum_wavetable_folder, 'serum_wavetable')
-os.makedirs(serum_wavetable_folder, exist_ok=True)
 
-# Define and create the subfolder within 'pwr2' named 'wt192'
-# pwr2_192_2048 = os.path.join(single_cycles_folder, pwr2_192_2048)
-os.makedirs(pwr2_192_2048, exist_ok=True)
-# print(f"DEBUG: pwr2_192_2048 set to: {pwr2_192_2048}")
-# print(f"DEBUG: Source 192 waveforms folder set to: {single_cycles_192k32b}")
-# print(f"DEBUG: Resampled waveforms folder set to: {pwr2_192_2048}")
+data_closest_pitch, sr_closest_pitch = sf.read(output_path_pwr2, dtype='float32')
+total_samples_closest_pitch = len(data_closest_pitch)
 
-# Calculate the ratio of the 2048 to wavecycle_samples_target_192
-pwr_of_2_wt192_ratio = target_wt192_length / wavecycle_samples_target_192
-print(f"interpolation ratio to get to next highest power of two: {round(pwr_of_2_wt192_ratio, 2)}")
+data_94hz, sr_94hz = sf.read(output_path_2048, dtype='float32')
+total_samples_94hz = len(data_94hz)
 
-# Calculate the target length for wt192K files as the power of 2 target
-pwr_of_2_wt192_target = int(round(wavecycle_samples_target_192 * pwr_of_2_wt192_ratio))
+# Now you have the total number of samples for each file
+# print(f"Total samples in closest pitch file: {total_samples_closest_pitch}")
+# print(f"Total samples in 94Hz file: {total_samples_94hz}")
+# For 'closest_pitch' wavetable type
+num_full_files_closest_pitch = math.ceil(total_samples_closest_pitch / 524288)
+split_and_save_wav_with_correct_padding(closest_pwr2_all_path, closest_pitch_folder, base, "closest_pitch", num_full_files_closest_pitch)
 
-for filename in os.listdir(single_cycles_192k32b):
-    if filename.endswith('.wav'):
-        wvtbl_192_path = os.path.join(single_cycles_192k32b, filename)
-        data, original_sr = sf.read(wvtbl_192_path)
-        interpolated_data = interpolate_seg(data, original_sr, target_wt192_length)
-        output_wt192_file_path = os.path.join(pwr2_192_2048, filename)
-        sf.write(output_wt192_file_path, interpolated_data, original_sr, subtype='FLOAT')
+# For '94Hz' wavetable type
+num_full_files_94hz = math.ceil(total_samples_94hz / 524288)
+split_and_save_wav_with_correct_padding(hz_94_all_path, hz_94_folder, base, "94Hz", num_full_files_94hz)
 
-# Combining Specified Number of Wavecycles into a Single File
-print("combining 2048 sample by 256 frame serum wavetable as wav file...")
-frames_to_combine_wt = 256  # 256 is the wt for serum standard
-wt192_count_remainder = total_files_in_single_cycles_192k32b - frames_to_combine_wt
 
-# print(f"DEBUG: Available Frames = {total_files_in_single_cycles_192k32b}")
-# print(f"DEBUG: frames to fill (ignore if negative)  = {wt192_count_remainder}")
+print("Wavetable files have been successfully created.")
 
-if total_files_in_single_cycles_192k32b == 0:
-    print("ERROR: No frames available to combine. Please check the source directory.")
-    exit()
+def perform_cleanup():
 
-elif total_files_in_single_cycles_192k32b == frames_to_combine_wt:
-    print("2048 frames available. Proceeding with combination...")
-    combined_wt192_frames = []
-    for filename in sorted(os.listdir(pwr2_192_2048)):
-        if filename.endswith(ext):
-            file_path = os.path.join(pwr2_192_2048, filename)
-            waveform, sr = sf.read(file_path)
-            combined_wt192_frames.append(waveform)
+    folders_to_cleanup = [tmp_folder, single_cycles_folder]
+    # files_to_cleanup = [output_path_2048, closest_pwr2_all_path]
 
-    combined_wt192_frame = np.concatenate(combined_wt192_frames, axis=0)
-    combined_wt192_frame_out = f"{base}_wt192_full_frame{ext}"
-    combined_wt192_frame_out_path = os.path.join(pwrs2_wt192_folder, combined_wt192_frame_out)
-    sf.write(combined_wt192_frame_out_path, combined_wt192_frame, sr, subtype='FLOAT')
-    print(f"Combined full frame saved as: {combined_wt192_frame_out_path}")
+    try:
+        for folder in folders_to_cleanup:
+            if os.path.exists(folder):
+                shutil.rmtree(folder)
+                # print(f"Deleted folder: {folder}")
+        '''
+        for file_path in files_to_cleanup:
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+                # print(f"Deleted file: {file_path}")
+        '''
+        print("Cleanup completed.")
+    except Exception as e:
+        print(f"An error occurred during cleanup: {e}")
 
-elif total_files_in_single_cycles_192k32b > frames_to_combine_wt:
-    # print(f"DEBUG: total_files_in_single_cycles_192k32b: {total_files_in_single_cycles_192k32b}, frames_to_combine_wt: {frames_to_combine_wt}")
-    highest_start_frame_wt192 = max(1, total_files_in_single_cycles_192k32b - frames_to_combine_wt)
-    if highest_start_frame_wt192 > 1:
-        # Set the starting frame
-        start_frame_wt192 = start_frame_wt
-        
-        # Calculate the ending frame based on the selected starting frame
-        ending_frame_wt192 = start_frame_wt192 + frames_to_combine_wt - 1
-
-        # Initialize the list for the combined frames
-        combined_192k_256_frames = []
-
-        # Iterate through the files in the source directory starting from the selected frame
-        for filename in sorted(os.listdir(pwr2_192_2048))[start_frame_wt192 - 1:ending_frame_wt192]:
-            if filename.endswith(ext):
-                # Construct the full path for the file
-                file_path = os.path.join(pwr2_192_2048, filename)
-                
-                # Read the waveform data
-                waveform, sr = sf.read(file_path)
-                
-                # Append the waveform data to the combined_192k_256_frames list
-                combined_192k_256_frames.append(waveform)
-
-        # Concatenate all frames along the first axis (time axis)
-        combined_192k_2048_frame_wt192k = np.concatenate(combined_192k_256_frames, axis=0)
-
-        # Define the output file name with the starting frame included
-        combined_192k_2048_frame_out = f"{base}_serum_start{start_frame_wt192:04d}_2048x{frames_to_combine_wt}{ext}"
-
-        # Construct the full path for the output file
-        combined_2048x256_frame_out_path = os.path.join(serum_wavetable_folder, combined_192k_2048_frame_out)
-
-        # Write the combined frames to the output file
-        sf.write(combined_2048x256_frame_out_path, combined_192k_2048_frame_wt192k, sr, subtype='FLOAT')
-
-        print(f"Combined {frames_to_combine_wt} frames starting from frame {start_frame_wt192} saved as: {combined_2048x256_frame_out_path}")
-
+# Check user's choice for cleanup from settings
+if settings['cleanup_choice'] == 'Y':
+    # print("Starting cleanup...")
+    perform_cleanup()
 else:
-    # Not enough frames to complete forward fill. Performing forward-backward fill...
-    print("Not enough frames to complete forward fill. Performing forward-backward fill...")
-    backward_fill_count = frames_to_combine_wt - total_files_in_single_cycles_192k32b
+    print("Skipping cleanup as per user choice.")
 
-    # Initialize the list for the combined frames
-    combined_frames = []
-
-    # Forward fill with available frames
-    for filename in sorted(os.listdir(pwr2_192_2048))[:total_files_in_single_cycles_192k32b]:
-        if filename.endswith(ext):
-            file_path = os.path.join(pwr2_192_2048, filename)
-            waveform, sr = sf.read(file_path)
-            combined_frames.append(waveform)
-
-    # Backward and inverted fill for the remainder
-    for filename in sorted(os.listdir(pwr2_192_2048))[-backward_fill_count:]:
-        if filename.endswith(ext):
-            file_path = os
-
-    # Forward fill with available frames
-    for filename in sorted(os.listdir(pwr2_192_2048))[:total_files_in_single_cycles_192k32b]:
-        if filename.endswith(ext):
-            file_path = os.path.join(pwr2_192_2048, filename)
-            waveform, sr = sf.read(file_path)
-            combined_frames.append(waveform)
-    
-    # Backward and inverted fill for the remainder
-    for filename in sorted(os.listdir(pwr2_192_2048))[-backward_fill_count:]:
-        if filename.endswith(ext):
-            file_path = os.path.join(pwr2_192_2048, filename)
-            waveform, sr = sf.read(file_path)
-            inverted_waveform = -np.flip(waveform)
-            combined_frames.append(inverted_waveform)
-    
-    # Concatenate all frames along the first axis (time axis)
-    combined_frame = np.concatenate(combined_frames, axis=0)
-
-    # Define the output file name
-    backfill_file_name = f"{base}_combined_backfilled_{frames_to_combine_wt}_frames{ext}"
-
-    # Construct the full path for the output file
-    combined_2048x256_frame_out_path = os.path.join(serum_wavetable_folder, backfill_file_name)
-
-    # Write the combined frames to the output file
-    sf.write(combined_2048x256_frame_out_path, combined_frame, sr, subtype='FLOAT')
-
-    print(f"Backfilled combined file created at {combined_2048x256_frame_out_path}")
 
 print(f"\n\n\n\nDONE\n\n\n\n")
 
-print("\n --- PAUSE ---")
 
-
-
-# print(f"DIRS: {dir()}  # \n a dictionary of local variables\n")
-# print(f"GLOBALS: {globals()}  # a dictionary of global variables\n")
-# print(f"LCL: {locals()}  # a dictionary of local variables\n")
-# print(f"VARs: {vars()}  # a dictionary of local variables\n")
-
-
+'''
+print(f"DIRS: {dir()}  # \n a dictionary of local variables\n")
+print(f"GLOBALS: {globals()}  # a dictionary of global variables\n")
+print(f"LCL: {locals()}  # a dictionary of local variables\n")
+print(f"VARs: {vars()}  # a dictionary of local variables\n")
+'''
