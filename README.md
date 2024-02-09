@@ -56,7 +56,7 @@ from the prompt within the python environment you set up, put the file you want 
 
 choose a file from the list and accept defaults.  The results will come back with some information and the output files in the folder named after your filename.
 
-# without defaults:
+### without defaults:
 
 answer `no` to the defaults question and you get a series of choices.
 
