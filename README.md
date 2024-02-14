@@ -115,8 +115,8 @@ Anyone interested, here is the breakdown of what it does:
 
 * the initial same size segments are also interpolated to the nearest power of 2 samples long segments.
 
-** If the pitch result is higher, multiple wave cycles can fit in one 2048 sample evenly.
-** If the pitch is lower, one wavecycle will not fit so you have to downsample to 96k if the nearest 192h power of 2 is 4096 samples of long, which makes a single 46.875 Hz segment fit into 1 2048 sample wavecycle (96000/2048= 46.875). Then to 48k if your nearest wavecycle size is 8192 samples long (48000/2048=23.438Hz) for if you put in a sub bass source file in the 20s.
+* If the pitch result is higher, multiple wave cycles can fit in one 2048 sample evenly.
+* If the pitch is lower, one wavecycle will not fit so you have to downsample to 96k if the nearest 192h power of 2 is 4096 samples of long, which makes a single 46.875 Hz segment fit into 1 2048 sample wavecycle (96000/2048= 46.875). Then to 48k if your nearest wavecycle size is 8192 samples long (48000/2048=23.438Hz) for if you put in a sub bass source file in the 20s.
 * Then you take each batch of segments and combine them back into two reconstructions of the input file, one at 93.75Hz and the other at the nearest power of 2 to the original pitch.
 * Then those get chopped into 256 frames of 2048 sample/frame serum wavetables sized files, one at 93.75 Hz and the other closer to the original pitch of the source file.
 * Bonus: the two full files are saved in concat folder to help you refine the non-default settings.
