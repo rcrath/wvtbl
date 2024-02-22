@@ -18,6 +18,8 @@ from pydub import AudioSegment
 from scipy.interpolate import interp1d
 import warnings
 from datetime import datetime
+import time
+import threading
 
 # Define the source folder
 source_folder = "source"
@@ -27,8 +29,8 @@ def list_and_select_wav_files(source_folder):
     # List all wav files in the source_folder
     files = [f for f in os.listdir(source_folder) if f.endswith('.wav')]
 
-    # Sort files alphabetically
-    files.sort()
+    # Sort files alphabetically in a case-insensitive manner
+    files.sort(key=lambda x: x.lower())
     
     # Display files to the user with an index
     for i, file in enumerate(files):
@@ -169,7 +171,7 @@ def split_and_save_wav_with_correct_padding(file_path, output_folder, base_name,
         output_file_path = os.path.join(output_folder, output_file_name)
         sf.write(output_file_path, segment, sr)  # Use `sr` to maintain original sample rate
         
-        print(f"Saved '{output_file_name}' with {len(segment)} samples")
+        # print(f"Saved '{output_file_name}' with {len(segment)} samples")
 
     # Handle the last segment if there's a remainder, ensuring it also becomes 524288 samples long
     remainder = segment_length % num_frames_per_file
@@ -185,7 +187,7 @@ def split_and_save_wav_with_correct_padding(file_path, output_folder, base_name,
         output_file_name = f"{base_name}_{wavetable_type}_{timestamp}.wav"
         output_file_path = os.path.join(output_folder, output_file_name)
         sf.write(output_file_path, last_segment, sr)  # Again, use `sr` for sample rate
-        print(f"Saved '{output_file_name}' with {len(last_segment)} samples")
+        # print(f"Saved '{output_file_name}' with {len(last_segment)} samples")
 
 
 # function to upsample or downsample files.
@@ -417,8 +419,37 @@ def is_segment_deviant(index, base, tmp_folder, ext):
     
     # Return True if the deviant file exists, False otherwise
     return os.path.exists(deviant_file_path)
+def spinner():
+    global stop_spinner
+    spinner_chars = ["-", "\\", "|", "/"]
+    idx = 0
+    while not stop_spinner:
+        sys.stdout.write('\r' + spinner_chars[idx % len(spinner_chars)])
+        sys.stdout.flush()
+        idx += 1
+        time.sleep(0.1)
+    # Clear the spinner before exiting
+    sys.stdout.write('\r')
+    sys.stdout.flush()
 
+import numpy as np
+import soundfile as sf
 
+def normalize_audio_to_peak(file_path, target_peak=-6):
+    """
+    Normalize the audio file to a target peak in dBFS.
+
+    Parameters:
+    - file_path: Path to the audio file.
+    - target_peak: Target peak level in dBFS.
+    """
+    data, samplerate = sf.read(file_path)
+    peak = np.max(np.abs(data))
+    if peak == 0:
+        return  # Avoid division by zero if the audio is silent
+    normalization_factor = 10 ** ((target_peak - 20 * np.log10(peak)) / 20)
+    normalized_data = data * normalization_factor
+    sf.write(file_path, normalized_data, samplerate)
 
 # Main script starts here
 lowest_freq = 20
@@ -584,20 +615,20 @@ confidence_threshold = 0.50
 
 if freq_est_manually_set:
     # If a manual frequency was previously set, offer a choice between it and the detected mode frequency
-    print(f"Detected mode frequency: {mode_frequency} Hz with confidence {round(mode_confidence_avg * 100)}%.")
+    print(f"Detected mode frequency: {round(mode_frequency)} Hz with confidence {round(mode_confidence_avg * 100)}%.")
     choice_prompt = f"Choose frequency source: \n1. Detected mode ({mode_frequency} Hz), \n2. Manually entered ({freq_est} Hz) \n[default: 1]: "
     user_choice = input(choice_prompt).strip()
 
     if user_choice == '2':
         # User chooses the manually entered frequency
         mode_frequency = freq_est
-        print(f"Using manually entered frequency: {freq_est} Hz.")
+        print(f"Using manually entered frequency: {freq_est} Hz")
     else:
         # User chooses the detected mode frequency or does not provide valid input; no change needed
-        print(f"Proceeding with detected mode frequency: {mode_frequency} Hz.")
+        print(f"Proceeding with detected mode frequency: {mode_frequency} Hz with confidence {round(mode_confidence_avg * 100)}%.")
 elif mode_confidence_avg < confidence_threshold:
     # If no manual frequency was set and confidence is low, prompt for manual frequency input
-    print("Pitch detection results are not reliable.")
+    print(f"Pitch detection results are not reliable, {round(mode_confidence_avg * 100)}%")
     freq_est = get_manual_frequency_input(lowest_freq, highest_freq)
     if freq_est is not None:
         # User chooses to manually set the frequency
@@ -606,9 +637,9 @@ elif mode_confidence_avg < confidence_threshold:
         print(f"Using manually entered frequency: {freq_est} Hz.")
     else:
         print("No manual frequency input provided. Unable to proceed.")
-else:
+#else:
     # If confidence is high and no manual frequency was previously set, proceed with detected mode frequency
-    print(f"Proceeding with high-confidence mode frequency: {mode_frequency} Hz.")
+    # print(f"Frequency: {mode_frequency} Hz, {round(mode_confidence_avg * 100)}% confidence.")
 
 # Ensure wavecycle_samples_target_192 is calculated and valid
 wavecycle_samples_target_192 = round(192000 / mode_frequency) if mode_frequency else None
@@ -617,12 +648,6 @@ if not wavecycle_samples_target_192 or wavecycle_samples_target_192 <= 0:
     print("Unable to proceed without a valid target wave cycle sample count.")
     sys.exit(1)
 
-# Display final decision on frequency use
-print("\nFinal frequency decision:")
-if mode_frequency is not None:
-    print(f"Final Mode Frequency: {mode_frequency} Hz.")
-else:
-    print("No mode frequency determined; unable to proceed.")
 
 # --- "pitch" section ends here ---
 
@@ -729,7 +754,6 @@ if prev_start_index < len(data):
         # print(f"Debug: Final segment {segment_index} is not a full wave cycle and was not written.")
 
 # Block 5 - Handling Tolerance and Identifying Qualifying Segments
-# Block 5: Handling Tolerance and Identifying Attack Phase
 
 # Assign tolerance from settings and calculate as decimal
 plus_minus_tolerance_percentage = settings['percent_tolerance']
@@ -743,10 +767,10 @@ else:
     sys.exit(1)  # Exit if mode frequency is undefined
 
 # Recalculate bounds with updated tolerance
-lower_bound = wavecycle_samples_target_192 * (1 - plus_minus_tolerance)
-upper_bound = wavecycle_samples_target_192 * (1 + plus_minus_tolerance)
+lower_bound = mode_frequency * (1 - plus_minus_tolerance)
+upper_bound = mode_frequency * (1 + plus_minus_tolerance)
 
-print(f"Using +/- tolerance: {plus_minus_tolerance_percentage}%, Lower Bound: {lower_bound}, Upper Bound: {upper_bound}")
+print(f"Tolerance (+/-): {round(plus_minus_tolerance_percentage)}%, {round(lower_bound)}Hz to {round(upper_bound)}Hz, {round(upper_bound - lower_bound)}Hz range")
 
 # Initialize list for storing non-deviant segment indices
 non_deviant_segments = []
@@ -761,7 +785,7 @@ first_set_start_index = None
 for i in range(len(non_deviant_segments) - 2):
     if non_deviant_segments[i] + 1 == non_deviant_segments[i + 1] and non_deviant_segments[i + 1] + 1 == non_deviant_segments[i + 2]:
         first_set_start_index = non_deviant_segments[i]
-        print(f"First three consecutive non-deviant segments start at index: {first_set_start_index}")
+        # print(f"First three consecutive non-deviant segments start at index: {first_set_start_index}")
         break
 
 # Rename preceding segments as attack phase, if applicable
@@ -773,7 +797,7 @@ if first_set_start_index is not None:
         atk_path = os.path.join(tmp_folder, atk_name)
         if os.path.exists(seg_file_path):
             os.rename(seg_file_path, atk_path)
-    print("Attack phase segments marked.")
+    # print("Attack phase segments marked.")
 else:
     print("No consecutive non-deviant segments for attack phase marking.")
 
@@ -821,14 +845,22 @@ if len(first_three_indices) >= 3:
 
 # Now handle deviant segments based on tolerance
 outside_tolerance_files = mark_deviant_segments(segment_sizes, lower_bound, upper_bound, wavecycle_samples_target_192, base, tmp_folder, ext)
-print(f"Count of files outside the tolerance range: {len(outside_tolerance_files)}" if outside_tolerance_files else "No segment files fall outside the tolerance range.")
+# print(f"Count of files outside the tolerance range: {len(outside_tolerance_files)}" if outside_tolerance_files else "No segment files fall outside the tolerance range.")
 
 
 
 
 # block 7
 # ---INTERPOLATION ---
-print("\nInterpolating...")
+print("\nInterpolating...\n")
+# Flag to control the spinner
+
+stop_spinner = False
+
+# Start the spinner thread
+spinner_thread = threading.Thread(target=spinner)
+spinner_thread.start()
+
 
 # Initialize the list to store interpolation ratios
 interpolation_ratios = []
@@ -907,15 +939,15 @@ for file in os.listdir(singles_folder):
 
         # Check if file is an '_atk', '_dev', or 'good' file and handle according to user's choice
         if '_atk' in file and discard_atk_choice == 'Y':
-            print("Discarding attack files")
+            # print("Discarding attack files")
             os.remove(file_path)  # Make sure to actually delete/discarding the file if needed
             continue  # Skip to the next file
         elif '_dev' in file and discard_dev_choice == 'Y':
-            print("Discarding deviant files")
+            # print("Discarding deviant files")
             os.remove(file_path)  # Make sure to actually delete/discarding the file if needed
             continue  # Skip to the next file
         elif not ('_atk' in file or '_dev' in file) and discard_good_choice == 'Y':
-            print("Discarding 'good' files")
+            # print("Discarding 'good' files")
             os.remove(file_path)  # Make sure to actually delete/discarding the file if needed
             continue  # Skip to the next file
 
@@ -935,6 +967,54 @@ for file in os.listdir(singles_folder):
         # Optionally print a message indicating the file has been processed and saved
 
 # print(f"Processed files according to user preferences and saved to 'single_cycles_192k32b'")
+
+# Initialize counters for each type of segment
+total_segments_count = 0
+attack_segments_count = 0
+good_segments_count = 0
+deviant_segments_count = 0
+
+
+# Iterate through all files in the 'singles_folder' to count before any potential discarding
+for file in os.listdir(singles_folder):
+    if file.endswith(".wav"):
+        total_segments_count += 1
+        if '_atk' in file:
+            attack_segments_count += 1
+        elif '_dev' in file:
+            deviant_segments_count += 1
+        else:
+            good_segments_count += 1
+    if file.endswith(".wav"):
+        # Construct the full path to the file
+        file_path = os.path.join(singles_folder, file)
+
+# Determine actions based on user choices
+atk_action = "discarding" if discard_atk_choice == 'Y' else "keeping"
+good_action = "discarding" if discard_good_choice == 'Y' else "keeping"
+dev_action = "discarding" if discard_dev_choice == 'Y' else "keeping"
+
+# Stop the spinner and print your statement
+stop_spinner = True
+spinner_thread.join()  # Wait for the spinner to finish
+
+# Print counts before discarding with action
+# print(f"Tolerance percentage: {settings['percent_tolerance']}%")
+print(f"Total segments before discarding: {total_segments_count}")
+print(f"Total attack segments: {attack_segments_count}, {atk_action}")
+print(f"Total good segments: {good_segments_count}, {good_action}")
+print(f"Total deviant segments: {deviant_segments_count}, {dev_action}")
+
+print("\nConstructing wavetables ...")
+
+# Flag to control the spinner
+
+stop_spinner = False
+
+# Start the spinner thread
+spinner_thread = threading.Thread(target=spinner)
+spinner_thread.start()
+
 
 # block 9
 # --- powers of two ---
@@ -999,7 +1079,6 @@ for filename in os.listdir(single_cycles_pwr2_any):
         interpolated_data = interpolate_seg(data, original_sr, target_length_2048)
         output_file_path = os.path.join(pwr2_192_2048, filename)
         sf.write(output_file_path, interpolated_data, original_sr, subtype='FLOAT')
-        # print(f"Processed and saved: {filename} to {output_file_path}")
 
 # print("Finished processing files for {pwr2_192_2048}.")
 
@@ -1058,7 +1137,7 @@ for filename in sorted(os.listdir(single_cycles_pwr2_any)):
 wavetable_data_pwr2 = np.concatenate(all_frames_pwr2, axis=0)
 
 # Save the concatenated wavetable
-output_file_pwr2 = f"{base}_closest_pwr2_all.wav"
+output_file_pwr2 = f"{base}_{nearest_192_higher_pwr2}_all.wav"
 output_path_pwr2 = os.path.join(concat_folder, output_file_pwr2)
 sf.write(output_path_pwr2, wavetable_data_pwr2, sr, subtype='FLOAT')
 # print(f"Saved processed files to '{output_file_pwr2} at {sr}Hz'")
@@ -1080,8 +1159,8 @@ output_path_2048 = os.path.join(concat_folder, output_file_2048)
 sf.write(output_path_2048, wavetable_data_2048, sr, subtype='FLOAT')
 # print(f"Saved processed files to '{output_file_2048}'")
 
-# Assuming {base}_closest_pwr2_all.wav and {base}_2048_94Hz_all.wav are located in concat_folder
-closest_pwr2_all_path = os.path.join(concat_folder, f"{base}_closest_pwr2_all.wav")
+# Assuming {base}_{nearest_192_higher_pwr2}_all.wav and {base}_2048_94Hz_all.wav are located in concat_folder
+closest_pwr2_all_path = os.path.join(concat_folder, f"{base}_{nearest_192_higher_pwr2}_all.wav")
 hz_94_all_path = os.path.join(concat_folder, f"{base}_2048_94Hz_all.wav")
 
 # block 11
@@ -1108,8 +1187,18 @@ split_and_save_wav_with_correct_padding(closest_pwr2_all_path, closest_pitch_fol
 num_full_files_94hz = math.ceil(total_samples_94hz / 524288)
 split_and_save_wav_with_correct_padding(hz_94_all_path, hz_94_folder, base, "94Hz", num_full_files_94hz)
 
+# Stop the spinner and print your statement
+stop_spinner = True
+spinner_thread.join()  # Wait for the spinner to finish
 
-print("Wavetable files have been successfully created.")
+# Use the 'concat_folder' variable as the directory where your wavetable files are stored
+wavetable_files = [os.path.join(concat_folder, f) for f in os.listdir(concat_folder) if f.endswith('.wav')]
+
+# Normalize each wavetable file in the concat_folder
+for wavetable_file in wavetable_files:
+    normalize_audio_to_peak(wavetable_file, target_peak=-6)
+
+print(f"All files in '{concat_folder}' have been normalized to peak -6 dBFS.")
 
 def perform_cleanup():
 
