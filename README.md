@@ -3,7 +3,7 @@
 ## Overview
 This is a script to process a short mono sound file into a set of serum compatible wavetables, one group at the rate of 93.75 hz, which will create 256 frames of 2048 sample single cycle serum wavetables, and a second file that creates variant number of integer multiples or submultiples to give the same 256 frame 2048 sample at a pitch as close to the source file's pitch as possible.  These files are all date/time stamped so that they will always have unique filenames if you want to try different settings. The 93.75 Hz wavetables are named `(source filename)__94Hz__datetime.wav`in a folder of the same name as the source file. THe "closest pitch" files are named `(source filename)__closestpitch__datetime.wav`in the same place.
 
-## Running wvtble
+## Running wvtbl
 
 ### Install python 3.11, which includes pip. other versions will not work.  instructions vary by OS. Google.
 
@@ -14,7 +14,7 @@ you can run on the defaults though without knowing the pitch and if the algorith
 
 ### set the environment
 
-wvtble is run from the command line on your operating system. `cmd` in windows, terminal in MacOS and Linux.  setup is simple, just copy and paste the code for the respective OS that follows.
+wvtbl is run from the command line on your operating system. `cmd` in windows, terminal in MacOS and Linux.  setup is simple, just copy and paste the code for the respective OS that follows.
 
 To set up a Python virtual environment including the libraries from Block 1, follow these steps:
 
