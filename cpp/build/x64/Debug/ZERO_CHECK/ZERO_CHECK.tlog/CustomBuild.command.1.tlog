@@ -1,0 +1,10 @@
+^E:\DROPBOX\AUDIO\GIT\WVTBL\CPP\BUILD\CMAKEFILES\AA9A92DEF60C58BFCC2EA2726EAD1AC5\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe" -SE:/Dropbox/audio/git/wvtbl/cpp -BE:/Dropbox/audio/git/wvtbl/cpp/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file E:/Dropbox/audio/git/wvtbl/cpp/build/wvtbl.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
