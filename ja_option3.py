@@ -1,3 +1,5 @@
+# ja_option3.py
+
 import os
 import soundfile as sf
 import numpy as np
@@ -10,14 +12,10 @@ selected_segment = None
 selected_sr = None  # Global variable to store the sample rate
 connection_id = None  # Global variable to store the connection ID
 
+# Update the plot_wav_file_interactive function to ensure it can be called multiple times
 def plot_wav_file_interactive(wav_file):
-    global selected_sr, data, sr, connection_id
-    if not os.path.exists(wav_file):
-        print(f"File not found: {wav_file}")
-        return
-
+    global data, sr, fig  # Add fig to global variables
     data, sr = sf.read(wav_file)
-    selected_sr = sr  # Store the sample rate globally
     time = np.linspace(0, len(data) / sr, num=len(data))
 
     fig, ax = plt.subplots(figsize=(15, 5))
@@ -30,8 +28,8 @@ def plot_wav_file_interactive(wav_file):
     # Add text to the plot
     ax.text(0.5, 0.9, 'Click on a starting point in the waveform', horizontalalignment='center', verticalalignment='center', transform=ax.transAxes)
 
-    connection_id = fig.canvas.mpl_connect('button_press_event', lambda event: on_click(event, data, sr, fig))
-    plt.show()  # Use blocking show to keep the first plot open
+    fig.canvas.mpl_connect('button_press_event', lambda event: on_click(event, data, sr, fig))
+    plt.show()
 
 def on_click(event, data, sr, fig):
     global selected_segment, connection_id
@@ -76,10 +74,20 @@ def plot_selection_graph(data, sr):
     def on_yes(event):
         save_selection(selected_segment, selected_sr)
         plt.close('all')  # Close all plots
-
+    # Inside plot_selection_graph function, update the on_no function
     def on_no(event):
         plt.close(fig)  # Close the selection plot
+        plot_wav_file_interactive(current_wav_file)  # Reopen the initial plot with correct context
+
+# Replace previous "on_no" function definition with this updated version
+def on_no(event):
+        plt.close(fig)  # Close the selection plot
         plot_wav_file_interactive(wav_file)  # Reopen the initial plot
+
+
+def on_no(event):
+    plt.close(fig)  # Close the selection plot
+    plot_wav_file_interactive(wav_file)  # Reopen the initial plot
 
     btn_yes.on_clicked(on_yes)
     btn_no.on_clicked(on_no)
@@ -103,6 +111,6 @@ def save_selection(data, sr):
     base = get_base()
     base_folder = os.path.join(os.getcwd(), base)
     os.makedirs(base_folder, exist_ok=True)
-    output_file = os.path.join(base_folder, f"{base}_selection_{timestamp}.wav")
-    sf.write(output_file, data, sr)
+    output_file = os.path.join(base_folder, f"{base}_{timestamp}_selection.wav")
+    sf.write(output_file, data, sr, subtype='FLOAT')
     print(f"Saved selection to {output_file}")

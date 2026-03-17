@@ -52,7 +52,7 @@ def generate_drunken_walk(length, amplitude_db):
     
     return drunken_walk
 
-def split_and_save_wav_with_correct_padding(file_path, output_folder, base_name, wavetable_type, num_full_files):
+def split_and_save_wav_with_correct_padding(file_path, output_folder, base_name, timestamp, wavetable_type, num_full_files):
     data, sr = sf.read(file_path) 
     segment_length = len(data)
     num_frames_per_file = 2048 * 256  # Serum-compatible wavetable size
@@ -62,13 +62,13 @@ def split_and_save_wav_with_correct_padding(file_path, output_folder, base_name,
 
     # Process each full file
     for i in range(num_full_files):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        counter = f"{i+1:02d}"  # Create a 2-digit counter starting from 01
         start_sample = i * num_frames_per_file
         end_sample = start_sample + num_frames_per_file
         segment = data[start_sample:end_sample]
-        output_file_name = f"{base_name}_{wavetable_type}_{timestamp}.wav"
+        output_file_name = f"{base_name}_{timestamp}_{wavetable_type}_{counter}.wav"
         output_file_path = os.path.join(output_folder, output_file_name)
-        sf.write(output_file_path, segment, sr)  # Use `sr` to maintain original sample rate
+        sf.write(output_file_path, segment, sr, subtype='FLOAT')  # Use `sr` to maintain original sample rate
 
     # Handle the last segment if there's a remainder, ensuring it also becomes 524288 samples long
     remainder = segment_length % num_frames_per_file
@@ -80,10 +80,10 @@ def split_and_save_wav_with_correct_padding(file_path, output_folder, base_name,
             last_segment = np.concatenate([padding_samples, data[-remainder:]])
         else:
             last_segment = np.concatenate([data[:padding_needed], data[-remainder:]])
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        output_file_name = f"{base_name}_{wavetable_type}_{timestamp}.wav"
+        counter = f"{num_full_files+1:02d}"  # Increment counter for the last chunk
+        output_file_name = f"{base_name}_{timestamp}_{wavetable_type}_{counter}.wav"
         output_file_path = os.path.join(output_folder, output_file_name)
-        sf.write(output_file_path, last_segment, sr)  # Again, use `sr` for sample rate
+        sf.write(output_file_path, last_segment, sr, subtype='FLOAT')  # Again, use `sr` for sample rate
 
 def process_and_pad_wavetables(concat_file_path, output_folder, output_base_name):
     frame_length = 2048
@@ -110,7 +110,7 @@ def process_and_pad_wavetables(concat_file_path, output_folder, output_base_name
 
     # Save the processed wavetable
     output_file_path = os.path.join(output_folder, f"{output_base_name}_wavetable.wav")
-    sf.write(output_file_path, data, sr)
+    sf.write(output_file_path, data, sr, subtype='FLOAT')
     print(f"Wavetable saved to {output_file_path} with {len(data)} samples.")
 
 def create_wavetable_from_concat(concat_file_path, output_wavetable_path):
@@ -137,7 +137,7 @@ def create_wavetable_from_concat(concat_file_path, output_wavetable_path):
         padded_data = concat_data
 
     # Save the padded data as the final wavetable
-    sf.write(output_wavetable_path, padded_data, sr)
+    sf.write(output_wavetable_path, padded_data, sr, subtype='FLOAT')
     print(f"Wavetable saved to {output_wavetable_path} with {len(padded_data)} samples.")
 
 def run():
@@ -158,32 +158,46 @@ def run():
     output_path_2048, sr_2048 = concatenate_files(output_folder_2048, output_path_2048)
     print(f"Concatenated file created at: {output_path_2048} with sample rate: {sr_2048}")
     
-    final_wavetable_path = os.path.join(base_folder, f"{base}_2048_wvtbl_all.wav")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     
-    option = input("Choose wavetable creation method:\n1. Squished to 256*2048 samples\n2. Arbitrarily cut into chunks\n3. Select and save\n")
+    options = input("Choose wavetable creation method (you can choose multiple, e.g., 1,2 or 1-3):\n1. Squished to 256*2048 samples\n2. Arbitrarily cut into chunks\n3. Select and save\n")
     
-    if option == '1':
+    # Parse user input
+    selected_options = set()
+    for part in options.split(','):
+        if '-' in part:
+            start, end = map(int, part.split('-'))
+            selected_options.update(range(start, end + 1))
+        else:
+            selected_options.add(int(part))
+    
+    # Process each selected option
+    if 1 in selected_options:
+        final_wavetable_path = os.path.join(base_folder, f"{base}_{timestamp}_squish.wav")
         create_wavetable_from_concat(output_path_2048, final_wavetable_path)
         print(f"Final wavetable saved to: {final_wavetable_path}")
-    elif option == '2':
+    
+    if 2 in selected_options:
+        timestamp_state = datetime.now().strftime("%Y%m%d_%H%M%S")
         data_2048, sr_2048 = sf.read(output_path_2048, dtype='float32')
         data_2048_padded = apply_padding_if_needed(data_2048, 524288, -60)
-        sf.write(output_path_2048, data_2048_padded, sr_2048)
+        sf.write(output_path_2048, data_2048_padded, sr_2048, subtype='FLOAT')
         
         num_full_files_2048 = math.ceil(len(data_2048_padded) / 524288)
-        split_and_save_wav_with_correct_padding(output_path_2048, base_folder, base, "2048", num_full_files_2048)
+        split_and_save_wav_with_correct_padding(output_path_2048, base_folder, base, timestamp_state, "chunk", num_full_files_2048)
         print(f"Wavetable split and saved in: {base_folder}")
-    elif option == '3':
+    
+    if 3 in selected_options:
         ja_option3.plot_wav_file_interactive(output_path_2048)
         if ja_option3.selected_segment is not None:
             ja_option3.save_selection(ja_option3.selected_segment, sr_2048)
         else:
             print("No selection was made.")
-    else:
-        print("Invalid option")
+   
+    if not selected_options & {1, 2, 3}:
+        print("Invalid option(s)")
 
     print("j_wvtblr is running and completed")
 
 if __name__ == "__main__":
     run()
-

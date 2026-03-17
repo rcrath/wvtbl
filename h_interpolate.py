@@ -82,7 +82,7 @@ def run(total_segments, total_deviant_segments, total_normal_segments, total_att
                 single_cycles_192k32b_path = os.path.join(singles_folder, single_cycles_192k32b_name)
         
                 # Write the interpolated segment to the '192k32b_singles' folder
-                sf.write(single_cycles_192k32b_path, interpolated_segment, samplerate, subtype=write_subtype)
+                sf.write(single_cycles_192k32b_path, interpolated_segment, samplerate, subtype='FLOAT')
 
     total_segments_count = 0
     attack_segments_count = 0
